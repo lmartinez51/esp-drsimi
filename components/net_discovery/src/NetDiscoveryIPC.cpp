@@ -273,5 +273,5 @@ extern "C" void netdiscovery_trigger_initial_scan(void) {
     };
     
     // Spawn scan in a thread to not block boot sequence (Priority 2 to not starve WebRTC Audio)
-    NetDiscovery::ThreadHelper::StartPinnedThread("nd_oneshot", 16384, 2, 0, scan_lambda);
+    NetDiscovery::ThreadHelper::StartInternalPinnedThread("nd_oneshot", 16384, 2, 0, scan_lambda);
 }
