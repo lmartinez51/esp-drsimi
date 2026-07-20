@@ -14,6 +14,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/timers.h"
 
 /**
  * @brief Cold-boot the BLE host and prepare the GAP scanner for identity
@@ -35,6 +37,17 @@ void orchestrator_start_identity_validation(void);
  * Posts ORCH_EVENT_BLE_RELEASE_COMPLETE or ORCH_EVENT_BLE_RELEASE_FAILED.
  */
 void orchestrator_start_ble_release(void);
+
+/**
+ * @brief Starts a bounded timeout for the NetDiscovery scan phase.
+ * Posts ORCH_EVENT_NETDISCOVERY_TIMEOUT if the scan doesn't complete in time.
+ */
+void orchestrator_start_net_discovery_timeout(void);
+
+/**
+ * @brief Returns the handle to the NetDiscovery timeout timer.
+ */
+TimerHandle_t orchestrator_get_net_discovery_timer(void);
 
 /**
  * @brief Dispatch an alert via alert_dispatcher_send_alert() in a dedicated task.

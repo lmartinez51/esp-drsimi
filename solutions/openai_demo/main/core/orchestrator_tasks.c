@@ -203,6 +203,39 @@ void orchestrator_start_ble_release(void)
     }
 }
 
+/* ── NetDiscovery Timeout Timer ───────────────────────────────────────────── */
+
+static TimerHandle_t s_nd_timeout_timer = NULL;
+
+static void orchestrator_net_discovery_timeout_cb(TimerHandle_t xTimer)
+{
+    ESP_LOGW(TAG, "NetDiscovery scan timer expired. Posting TIMEOUT event.");
+    orchestrator_post_event(ORCH_EVENT_NETDISCOVERY_TIMEOUT);
+}
+
+void orchestrator_start_net_discovery_timeout(void)
+{
+    if (s_nd_timeout_timer == NULL) {
+        s_nd_timeout_timer = xTimerCreate("nd_timeout",
+                                          pdMS_TO_TICKS(NET_DISCOVERY_SCAN_TIMEOUT_MS),
+                                          pdFALSE, /* one-shot */
+                                          (void *)0,
+                                          orchestrator_net_discovery_timeout_cb);
+    }
+    
+    if (s_nd_timeout_timer != NULL) {
+        ESP_LOGI(TAG, "NetDiscovery scan timer started (%d ms)", NET_DISCOVERY_SCAN_TIMEOUT_MS);
+        xTimerStart(s_nd_timeout_timer, 0);
+    } else {
+        ESP_LOGE(TAG, "Failed to create NetDiscovery timeout timer");
+    }
+}
+
+TimerHandle_t orchestrator_get_net_discovery_timer(void)
+{
+    return s_nd_timeout_timer;
+}
+
 /* ── Alert Dispatch Task ────────────────────────────────────────────────── */
 
 typedef struct

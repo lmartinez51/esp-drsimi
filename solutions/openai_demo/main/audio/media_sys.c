@@ -95,30 +95,29 @@ void media_sys_teardown(void)
             ESP_LOGW(TAG, "esp_capture_close returned %d", ret);
         }
         capture_sys.capture_handle = NULL;
-        capture_sys.primary_path = NULL;
-    }
-    else
-    {
-        if (capture_sys.path_if != NULL && capture_sys.path_if->close != NULL)
-        {
-            capture_sys.path_if->close(capture_sys.path_if);
-        }
-        if (capture_sys.aud_src != NULL && capture_sys.aud_src->close != NULL)
-        {
-            capture_sys.aud_src->close(capture_sys.aud_src);
-        }
     }
 
     if (capture_sys.path_if != NULL)
     {
+        if (capture_sys.path_if->close != NULL) {
+            capture_sys.path_if->close(capture_sys.path_if);
+        }
         free(capture_sys.path_if);
         capture_sys.path_if = NULL;
     }
+
     if (capture_sys.aud_src != NULL)
     {
+        if (capture_sys.aud_src->close != NULL) {
+            capture_sys.aud_src->close(capture_sys.aud_src);
+        }
+        // If there's a del() pointer, we should probably call it instead of raw free
+        // but we'll stick to free if del isn't an exposed function pointer to be safe, 
+        // though typically they expose del.
         free(capture_sys.aud_src);
         capture_sys.aud_src = NULL;
     }
+
     if (capture_sys.aud_enc != NULL)
     {
         free(capture_sys.aud_enc);

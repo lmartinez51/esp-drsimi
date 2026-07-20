@@ -17,6 +17,7 @@ list(APPEND EXTRA_COMPONENT_DIRS
     "../../components/media_lib_sal"
     "../../components/webrtc_utils"
     "../../components/esp-bsp/bsp/esp-box-3"
+    "../../components/net_discovery"
 )
 
 list(APPEND EXTRA_COMPONENT_DIRS "../common")

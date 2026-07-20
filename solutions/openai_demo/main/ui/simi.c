@@ -1023,8 +1023,15 @@ void ui_simi_deinit(void)
         }
 
         if (simi_anim_is_running()) {
-            ESP_LOGE(TAG, "CRITICAL ERROR: simi_anim_task refuses to terminate! Skipping PSRAM free to prevent Use-After-Free.");
-            return;
+            ESP_LOGE(TAG, "CRITICAL ERROR: simi_anim_task refuses to terminate! Force killing task to prevent leak.");
+            if (s_anim_task != NULL) {
+                vTaskDelete(s_anim_task);
+                s_anim_task = NULL;
+            }
+            if (s_anim_mutex != NULL) {
+                // Release the mutex forcefully in case the dead task was holding it
+                xSemaphoreGive(s_anim_mutex);
+            }
         }
     }
 

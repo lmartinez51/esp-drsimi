@@ -22,6 +22,7 @@
 #include "driver/gpio.h"
 #include "esp_system.h"
 #include "webrtc.h"
+#include "NetDiscoveryIPC.h"
 
 static const char *TAG = "ESP_CLAW_ISO";
 static QueueHandle_t s_test_queue = NULL;
@@ -145,6 +146,23 @@ static int l_send_webrtc_response(lua_State *L) {
     }
     return 0;
 }
+
+static int l_send_intent(lua_State *L) {
+    if (lua_gettop(L) >= 2) {
+        const char* call_id = lua_tostring(L, 1);
+        const char* intent_json = lua_tostring(L, 2);
+        if (call_id && intent_json && netdiscovery_intent_queue) {
+            netdiscovery_intent_t msg;
+            strncpy(msg.call_id, call_id, sizeof(msg.call_id)-1);
+            msg.call_id[sizeof(msg.call_id)-1] = '\0';
+            strncpy(msg.intent_json, intent_json, sizeof(msg.intent_json)-1);
+            msg.intent_json[sizeof(msg.intent_json)-1] = '\0';
+            xQueueSend(netdiscovery_intent_queue, &msg, pdMS_TO_TICKS(10));
+        }
+    }
+    return 0;
+}
+
 
 static int l_inject_webrtc_message(lua_State *L) {
     if (lua_gettop(L) >= 1) {
@@ -402,6 +420,7 @@ static void lua_worker_task(void *arg) {
     lua_register(L, "c_send_webrtc_response", l_send_webrtc_response);
     lua_register(L, "c_inject_webrtc_message", l_inject_webrtc_message);
     lua_register(L, "c_save_rules", l_save_rules_to_fs);
+    lua_register(L, "c_send_intent", l_send_intent);
 
     ESP_LOGI(TAG, "Registering IR bindings safely");
     ESP_LOGI("ESP_CLAW_ISO", "HighWater BEFORE=%u", (unsigned)uxTaskGetStackHighWaterMark(NULL));
@@ -568,6 +587,8 @@ esp_err_t esp_claw_init(void) {
         ESP_LOGE(TAG, "Failed to spawn lua_worker_task.");
         return ESP_FAIL;
     }
+
+    netdiscovery_ipc_init();
 
     return ESP_OK;
 }

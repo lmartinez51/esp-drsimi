@@ -24,6 +24,7 @@
 #include <string.h>
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "NetDiscoveryIPC.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -191,6 +192,15 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         radar_hal_disable();
         csi_handler_stop();
         orchestrator_start_ble_release();
+        break;
+
+    case STATE_NET_DISCOVERY_SCAN:
+        ESP_LOGI(TAG, "STATE_NET_DISCOVERY_SCAN: Starting NetDiscovery one-shot scan.");
+        orchestrator_cancel_sleep_csi_cooldown();
+        radar_hal_disable();
+        csi_handler_stop();
+        netdiscovery_trigger_initial_scan();
+        orchestrator_start_net_discovery_timeout();
         break;
 
     case STATE_DISPATCHING_ALERT:
@@ -542,12 +552,29 @@ void app_startup_orchestrator_task(void *param)
                     orchestrator_enter_state(&state, STATE_DISPATCHING_ALERT);
                 } else {
                     s_ignition_webrtc_mode = s_pending_webrtc_mode;
-                    orchestrator_enter_state(&state, STATE_IGNITING);
+                    orchestrator_enter_state(&state, STATE_NET_DISCOVERY_SCAN);
                 }
             } else if (event == ORCH_EVENT_BLE_RELEASE_FAILED) {
                 orchestrator_log_heap_snapshot("ble_release:failed_to_sleep");
                 s_ble_release_to_sleep = false;
                 orchestrator_enter_state(&state, STATE_SLEEP);
+            } else {
+                orchestrator_ignore_event(state, event);
+            }
+            break;
+
+        case STATE_NET_DISCOVERY_SCAN:
+            if (event == ORCH_EVENT_WIFI_DISCONNECTED) {
+                orchestrator_enter_state(&state, STATE_WAIT_WIFI);
+            } else if (event == ORCH_EVENT_NETDISCOVERY_COMPLETE) {
+                TimerHandle_t timer = orchestrator_get_net_discovery_timer();
+                if (timer != NULL) {
+                    xTimerStop(timer, 0);
+                }
+                orchestrator_enter_state(&state, STATE_IGNITING);
+            } else if (event == ORCH_EVENT_NETDISCOVERY_TIMEOUT) {
+                ESP_LOGE(TAG, "STATE_NET_DISCOVERY_SCAN: Scan timed out. Proceeding to ignite with stale knowledge.");
+                orchestrator_enter_state(&state, STATE_IGNITING);
             } else {
                 orchestrator_ignore_event(state, event);
             }

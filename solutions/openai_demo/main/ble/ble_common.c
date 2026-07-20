@@ -255,11 +255,21 @@ esp_err_t ble_common_deinit(uint32_t timeout_ms)
             xSemaphoreTake(host_stop_semaphore, 0);
         }
 
+        ble_gap_disc_cancel();
+        ble_gap_adv_stop();
+
         int stop_rc = nimble_port_stop();
+        int retries = 5;
+        while (stop_rc == 2 && retries-- > 0) {
+            ESP_LOGW(TAG, "nimble_port_stop busy, retrying in 50ms...");
+            vTaskDelay(pdMS_TO_TICKS(50));
+            stop_rc = nimble_port_stop();
+        }
+
         if (stop_rc != 0) {
-            ESP_LOGE(TAG, "nimble_port_stop returned %d; refusing to deinit busy host", stop_rc);
+            ESP_LOGE(TAG, "nimble_port_stop returned %d; forcing deinit anyway to prevent leak", stop_rc);
             s_ble_state = BLE_COMMON_STATE_ERROR;
-            return ESP_FAIL;
+            // Do not return here. Continue to deinit to prevent permanent memory leaks.
         }
 
         if (host_stop_semaphore != NULL) {
