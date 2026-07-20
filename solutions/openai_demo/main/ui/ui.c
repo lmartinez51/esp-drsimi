@@ -1113,30 +1113,35 @@ void display_resetting_message(void)
  *        Shows the text in red color, centered below the WiFi credentials prompt area.
  *        Used to indicate that the device is not connected to WiFi.
  */
-void display_disconnected_message(void)
+void display_disconnected_message(const char* line1, const char* line2)
 {
     clear_screen();
     draw_screen_border(COLOR_RED_BGR565, 2);
 
-    // Mapeo de caracteres para "Disconnected!"
-    // D-i-s-c-o-n-n-e-c-t-e-d-!
-    int char_map[] = {27, 8, 9, 20, 11, 12, 12, 14, 20, 16, 14, 21, 13};
-    int num_chars = sizeof(char_map) / sizeof(char_map[0]);
     int scale = 2;
+    int line_spacing = 8;
     int char_h = CHAR_HEIGHT * scale;
 
-    // Calcular dimensiones del texto
-    int width = num_chars * (CHAR_WIDTH * scale) + (num_chars - 1) * CHAR_SPACING_SCALE_2X;
-    int x = (BSP_LCD_H_RES - width) / 2;
+    int map_l1[32];
+    int num_l1 = 0;
+    if (line1) num_l1 = convert_string_to_char_map(line1, map_l1, 32);
 
-    // Usar la misma posición vertical que display_wifi_creds
-    int text_y_center = (BSP_LCD_V_RES - char_h) / 2;
-    int y = text_y_center + char_h + 8;
+    int map_l2[32];
+    int num_l2 = 0;
+    if (line2) num_l2 = convert_string_to_char_map(line2, map_l2, 32);
 
-    // La pantalla ya fue limpiada arriba, procedemos a dibujar el texto
+    int width_l1 = num_l1 * (CHAR_WIDTH * scale) + (num_l1 > 0 ? (num_l1 - 1) * CHAR_SPACING_SCALE_2X : 0);
+    int width_l2 = num_l2 * (CHAR_WIDTH * scale) + (num_l2 > 0 ? (num_l2 - 1) * CHAR_SPACING_SCALE_2X : 0);
 
-    // Mostrar el mensaje de desconexión en rojo
-    display_text(x, y, char_map, num_chars, COLOR_RED_BGR565, scale);
+    int x_l1 = (BSP_LCD_H_RES - width_l1) / 2;
+    int x_l2 = (BSP_LCD_H_RES - width_l2) / 2;
+
+    int total_height = char_h + (num_l2 > 0 ? (line_spacing + char_h) : 0);
+    int start_y = (BSP_LCD_V_RES - total_height) / 2;
+
+    if (num_l1 > 0) display_text(x_l1, start_y, map_l1, num_l1, COLOR_RED_BGR565, scale);
+    if (num_l2 > 0) display_text(x_l2, start_y + char_h + line_spacing, map_l2, num_l2, COLOR_RED_BGR565, scale);
+
     ui_backlight_on();
 }
 

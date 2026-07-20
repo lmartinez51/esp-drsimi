@@ -69,7 +69,7 @@ extern "C"
      * @brief Muestra un mensaje de desconexión.
      * Indica que el dispositivo está desconectado de la red WiFi.
      */
-    void display_disconnected_message(void);
+    void display_disconnected_message(const char* line1, const char* line2);
 
     /**
      * @brief Muestra un mensaje de error de clave API en la pantalla LCD.

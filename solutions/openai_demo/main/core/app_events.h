@@ -65,6 +65,7 @@ typedef struct
 } orchestrator_event_msg_t;
 
 void orchestrator_post_event(orchestrator_event_t event);
+void orchestrator_post_event_from_timer(orchestrator_event_t event);
 void orchestrator_post_motion_detected(uint32_t timestamp_ms, float corr_drop);
 void orchestrator_post_mute_state(bool is_muted);
 void orchestrator_post_fatal_error(void);

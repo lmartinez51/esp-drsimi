@@ -138,24 +138,12 @@ std::string FileKnowledgeStore::GetEntityFilePath(const std::string& networkId, 
 }
 
 bool FileKnowledgeStore::EnsureDirectoryExists(const std::string& path) const {
-    std::string::size_type pos = 0;
-    do {
-        pos = path.find_first_of("\\/", pos + 1);
-        std::string sub = path.substr(0, pos);
-        struct stat st;
-        if (stat(sub.c_str(), &st) != 0) {
-            if (mkdir(sub.c_str(), 0777) != 0) {
-                // If it fails, could be because it was just created or another issue
-                // We'll just continue and the final stat will check
-            }
-        }
-    } while (pos != std::string::npos);
-    
-    struct stat st;
-    if (stat(path.c_str(), &st) == 0) {
-        return S_ISDIR(st.st_mode);
-    }
-    return false;
+    // BUG #3 FIX: Hollowing out this function to prevent runtime `stat()` or `mkdir()`
+    // calls from the PSRAM-allocated `nd_oneshot` task. Calling `stat()` from PSRAM
+    // when the SPI flash is busy causes an `esp_task_stack_is_sane_cache_disabled`
+    // hardware cache panic. The directory tree is now pre-created during system boot
+    // in `ensure_directory_tree()`.
+    return true;
 }
 
 } // namespace NetDiscovery

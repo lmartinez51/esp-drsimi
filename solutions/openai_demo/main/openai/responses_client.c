@@ -13,6 +13,8 @@
 #include "http_client.h"
 #include "config_manager.h"
 #include "esp_crt_bundle.h"
+#include "app_events.h"
+#include "simi.h"
 
 static const char *TAG = "RESPONSES_CLIENT";
 
@@ -142,6 +144,15 @@ static void lookup_product_task(void *pvParameters)
 
         cleanup_msg:
             ui_clear_status_message();
+            
+            // Bug #1 Fix: Explicitly restore the UI state based on the hardware mute state,
+            // gracefully bypassing the WebRTC timeout watchdog logic without blocking the UI panel.
+            if (orchestrator_get_mute_state()) {
+                ui_simi_set_state(SIMI_STATE_MUTED);
+            } else {
+                ui_simi_set_state(SIMI_STATE_LISTENING);
+            }
+
             if (post_data) free(post_data);
         }
     }

@@ -175,7 +175,7 @@ static void vIdleTimerCallback(TimerHandle_t xTimer)
         ESP_LOGE(TAG, "¡Timer de inactividad llegó a 0! A dormir...");
         xTimerStop(g_idle_timer, 0);
         ui_simi_set_arbiter_slot(2, "");
-        orchestrator_post_event(ORCH_EVENT_AUTO_SLEEP_TIMEOUT);
+        orchestrator_post_event_from_timer(ORCH_EVENT_AUTO_SLEEP_TIMEOUT);
     }
 }
 

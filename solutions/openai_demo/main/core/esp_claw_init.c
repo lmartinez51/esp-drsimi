@@ -10,6 +10,7 @@
 #include "cJSON.h"
 #include <unistd.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 
 #include "lua.h"
@@ -468,6 +469,11 @@ static void lua_worker_task(void *arg) {
         // The FS corruption alert is injected into the LLM context by
         // webrtc_inject_arrival_context() once WebRTC connects.
     } else {
+        // Pre-create directory tree for NetDiscovery and others
+        if (mkdir("/littlefs/netdiscovery", 0777) == -1 && errno != EEXIST) {
+            ESP_LOGE(TAG, "Failed to create /littlefs/netdiscovery directory: %s", strerror(errno));
+        }
+
         // 2. Safely load the automation script from LittleFS.
         //
         // IMPORTANT: luaL_dofile() returning LUA_OK only proves the script

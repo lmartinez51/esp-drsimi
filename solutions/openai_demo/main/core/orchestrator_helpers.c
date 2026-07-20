@@ -382,6 +382,21 @@ void orchestrator_post_event(orchestrator_event_t event)
     }
 }
 
+void orchestrator_post_event_from_timer(orchestrator_event_t event)
+{
+    orchestrator_event_msg_t msg = { .type = event };
+
+    if (s_orchestrator_event_queue == NULL) {
+        ESP_LOGW(TAG, "Orchestrator queue not ready; dropping event=%d from timer", event);
+        return;
+    }
+
+    if (xQueueSend(s_orchestrator_event_queue, &msg, 0) != pdTRUE)
+    {
+        ESP_LOGW(TAG, "Orchestrator queue full; dropping %s from timer", orchestrator_event_name(event));
+    }
+}
+
 void orchestrator_post_fatal_error(void)
 {
     orchestrator_event_msg_t msg = { .type = ORCH_EVENT_FATAL_ERROR };

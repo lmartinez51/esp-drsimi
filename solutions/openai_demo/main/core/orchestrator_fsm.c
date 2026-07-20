@@ -105,6 +105,10 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         csi_handler_stop();
         ui_simi_stop();
         ui_simi_deinit();
+        ui_panel_lock();
+        display_disconnected_message("WiFi Lost", "Reconnecting");
+        ui_panel_unlock();
+        vTaskDelay(pdMS_TO_TICKS(200));
         ui_deinit_keep_last_frame();
         stop_webrtc();
         ble_device_stop_smart_task();
@@ -113,7 +117,6 @@ void orchestrator_enter_state(orchestrator_state_t *state,
                              WIFI_CONNECTED_BIT | WEBRTC_CONNECTED_BIT |
                                  WEBRTC_DISCONNECTED_BIT | WEBRTC_API_ERROR_BIT);
         xEventGroupSetBits(app_startup_event_group, WIFI_DISCONNECTED_BIT);
-        display_disconnected_message();
         break;
 
     case STATE_SLEEP:
@@ -199,6 +202,7 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         orchestrator_cancel_sleep_csi_cooldown();
         radar_hal_disable();
         csi_handler_stop();
+        orchestrator_show_phase("net_discovery", "Scanning Network", "Learning...", COLOR_CYAN_BGR565);
         netdiscovery_trigger_initial_scan();
         orchestrator_start_net_discovery_timeout();
         break;

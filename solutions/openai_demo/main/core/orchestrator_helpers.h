@@ -179,6 +179,7 @@ const char *orchestrator_event_name(orchestrator_event_t event);
 /* ── Event Posting Functions ────────────────────────────────────────────── */
 
 void orchestrator_post_event(orchestrator_event_t event);
+void orchestrator_post_event_from_timer(orchestrator_event_t event);
 void orchestrator_post_fatal_error(void);
 void orchestrator_post_mute_state(bool is_muted);
 bool orchestrator_get_mute_state(void);
