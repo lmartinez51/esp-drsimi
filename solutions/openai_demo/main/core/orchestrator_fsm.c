@@ -133,6 +133,8 @@ void orchestrator_enter_state(orchestrator_state_t *state,
             ESP_LOGW(TAG, "STATE_SLEEP: Sesión Vigilante concluida. "
                           "Escribiendo CENTINELA en NVS para el próximo arranque.");
             nvs_set_operation_mode(BOOT_MODE_CENTINELA);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_restart();
         }
         /* ────────────────────────────────────────────────────────────────── */
 

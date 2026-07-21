@@ -1591,6 +1591,15 @@ int esp_capture_close(esp_capture_handle_t h)
     }
     capture_t *capture = (capture_t *)h;
     esp_capture_stop(h);
+
+    // FIX: Free dynamically allocated path structures before the master capture struct is destroyed.
+    for (int i = 0; i < capture->path_num; i++) {
+        if (capture->path[i]) {
+            media_lib_free(capture->path[i]);
+            capture->path[i] = NULL;
+        }
+    }
+
     if (capture->cfg.capture_path) {
         capture->cfg.capture_path->close(capture->cfg.capture_path);
     }
