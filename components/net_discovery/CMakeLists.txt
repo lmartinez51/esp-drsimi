@@ -88,7 +88,7 @@ set(srcs
 idf_component_register(
     SRCS "${srcs}"
     INCLUDE_DIRS "include" "include/core" "src" "third_party/tinyxml2"
-    REQUIRES lwip vfs esp_timer esp_system freertos esp_http_client pthread json
+    REQUIRES lwip vfs esp_timer esp_system freertos esp_http_client pthread json esp_wifi
 )
 
 target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)

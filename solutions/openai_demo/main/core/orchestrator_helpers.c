@@ -309,6 +309,7 @@ const char *orchestrator_state_name(orchestrator_state_t state)
     case STATE_PREPARING_BLE:       return "STATE_PREPARING_BLE";
     case STATE_VALIDATING_IDENTITY: return "STATE_VALIDATING_IDENTITY";
     case STATE_RELEASING_BLE:       return "STATE_RELEASING_BLE";
+    case STATE_NET_DISCOVERY_SCAN:  return "STATE_NET_DISCOVERY_SCAN";
     case STATE_DISPATCHING_ALERT:   return "STATE_DISPATCHING_ALERT";
     case STATE_IGNITING:            return "STATE_IGNITING";
     case STATE_ACTIVE:              return "STATE_ACTIVE";

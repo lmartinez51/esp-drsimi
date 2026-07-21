@@ -204,7 +204,7 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         orchestrator_cancel_sleep_csi_cooldown();
         radar_hal_disable();
         csi_handler_stop();
-        orchestrator_show_phase("net_discovery", "Scanning Network", "Learning...", COLOR_CYAN_BGR565);
+        orchestrator_show_phase("net_discovery", "Scanning WiFi", "Learning...", COLOR_CYAN_BGR565);
         netdiscovery_trigger_initial_scan();
         orchestrator_start_net_discovery_timeout();
         break;

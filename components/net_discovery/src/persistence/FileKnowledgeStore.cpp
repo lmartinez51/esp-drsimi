@@ -138,12 +138,21 @@ std::string FileKnowledgeStore::GetEntityFilePath(const std::string& networkId, 
 }
 
 bool FileKnowledgeStore::EnsureDirectoryExists(const std::string& path) const {
-    // BUG #3 FIX: Hollowing out this function to prevent runtime `stat()` or `mkdir()`
-    // calls from the PSRAM-allocated `nd_oneshot` task. Calling `stat()` from PSRAM
-    // when the SPI flash is busy causes an `esp_task_stack_is_sane_cache_disabled`
-    // hardware cache panic. The directory tree is now pre-created during system boot
-    // in `ensure_directory_tree()`.
-    return true;
+    // Caller verification: FileKnowledgeStore only calls this with m_baseDir 
+    // or GetNetworkDir() (e.g. "/littlefs/knowledge/SSID"). It is never called 
+    // with a full file path (e.g. ending in .json).
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0) {
+        return true; // Directory already exists
+    }
+    
+    // Create directory since it's now safe from Internal RAM
+    if (mkdir(path.c_str(), 0777) == 0) {
+        return true;
+    }
+    
+    ESP_LOGE(TAG, "[FileKnowledgeStore] Failed to create directory %s", path.c_str());
+    return false;
 }
 
 } // namespace NetDiscovery

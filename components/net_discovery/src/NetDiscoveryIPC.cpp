@@ -26,6 +26,7 @@
 #include "../src/persistence/FileKnowledgeStore.h"
 #include "../include/ThreadHelper.h"
 
+#include "esp_wifi.h"
 #include "esp_log.h"
 #include "cJSON.h"
 #include <string.h>
@@ -212,6 +213,15 @@ extern "C" void netdiscovery_trigger_initial_scan(void) {
         auto fileStore = std::make_unique<FileKnowledgeStore>("/littlefs/knowledge");
         g_knowledgeStore = std::make_shared<KnowledgeStore>(std::move(fileStore));
         g_knowledgeStore->Initialize();
+
+        NetworkFingerprint networkFingerprint;
+        wifi_config_t wifi_cfg;
+        if (esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg) == ESP_OK) {
+            networkFingerprint.evidence.ssid = std::string((char*)wifi_cfg.sta.ssid);
+        } else {
+            networkFingerprint.evidence.ssid = "LocalNetwork";
+        }
+        g_knowledgeStore->ResolveKnownNetwork(networkFingerprint);
 
         g_authManager = std::make_shared<AuthenticationManager>(g_knowledgeStore.get());
         g_controllerRegistry = std::make_shared<ControllerRegistry>();
