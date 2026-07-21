@@ -613,12 +613,12 @@ static bool ui_panel_blit_internal(int x0, int y0, int x1, int y1,
  * @param x1,y1 Esquina inferior derecha (exclusiva).
  * @param pixels Buffer de píxeles en formato del panel (16 bpp).
  */
-void ui_panel_blit(int x0, int y0, int x1, int y1, const void *pixels)
+bool ui_panel_blit(int x0, int y0, int x1, int y1, const void *pixels)
 {
-    (void)ui_panel_blit_internal(x0, y0, x1, y1, pixels,
-                                 portMAX_DELAY,
-                                 pdMS_TO_TICKS(2000),
-                                 true);
+    return ui_panel_blit_internal(x0, y0, x1, y1, pixels,
+                                  portMAX_DELAY,
+                                  pdMS_TO_TICKS(2000),
+                                  true);
 }
 
 bool ui_panel_try_blit(int x0, int y0, int x1, int y1,

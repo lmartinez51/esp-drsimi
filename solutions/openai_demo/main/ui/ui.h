@@ -160,7 +160,7 @@ extern "C"
      * @param x1,y1 Esquina inferior derecha (exclusiva).
      * @param pixels Buffer de píxeles en el formato del panel (16 bpp).
      */
-    void ui_panel_blit(int x0, int y0, int x1, int y1, const void *pixels);
+    bool ui_panel_blit(int x0, int y0, int x1, int y1, const void *pixels);
 
     /**
      * @brief Intenta enviar un bitmap al panel sin esperar indefinidamente por el mutex.

@@ -274,9 +274,9 @@ static bool simi_blit_dirty_rect(int x0, int y0, int x1, int y1, bool blocking)
         }
         if (blocking)
         {
-            ui_panel_blit(SIMI_BLIT_X + x0, SIMI_BLIT_Y + y,
-                          SIMI_BLIT_X + x0 + w, SIMI_BLIT_Y + y + rows,
-                          s_dirty_buf);
+            ok = ui_panel_blit(SIMI_BLIT_X + x0, SIMI_BLIT_Y + y,
+                               SIMI_BLIT_X + x0 + w, SIMI_BLIT_Y + y + rows,
+                               s_dirty_buf);
         }
         else
         {
@@ -346,7 +346,7 @@ static void simi_anim_task(void *arg)
         simi_state_t visual_state = simi_effective_state(base_state, speaking);
         bool state_changed = (visual_state != last_visual_state) || (speaking != last_speaking);
         bool render = state_changed;
-        bool blocking_blit = true;
+        bool blocking_blit = false; // Use non-blocking SPI blits to skip frames during high network load
 
         static simi_face_t current_f = {0};
         static bool current_f_init = false;
