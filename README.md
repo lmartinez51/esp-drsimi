@@ -23,6 +23,7 @@ Dr. SimiBot is a playful, Spanish-speaking persona inspired by the Mexican masco
 - 🤫 **Smart Silent Mode** — when the user asks the assistant to stay quiet, it mutes audio but keeps the session active and can post short text-only messages to the conversation/display.
 - 💡 **Internal event system** that provides convenient pseudo-events (`keep.alive`, `system.message.create`) mapped to real Realtime API events.
 - 🔵 **BLE** client/server for WiFi credential provisioning and remote commands.
+- 🌐 **NetDiscovery (DIAL/SSDP)** — seamless local network discovery and control of smart TVs, projectors, and media renderers via semantic orchestration.
 - 📶 **Auto WiFi reconnection** after receiving new credentials over BLE (no physical reboot required).
 - 📺 **On-device LCD UI** with a tailored character map, procedural dynamic outfits for Dr. Simi (e.g. Doctor, Mexico National Team, Chapulín Colorado, FC Barcelona), and hardware-accelerated rendering optimizations (dirty rect restore).
 - 🌡️ **Environmental Sensing** — real-time temperature and humidity monitoring via I2C (AHT30), rendered directly on the LCD UI.
@@ -151,6 +152,10 @@ You can control various device features simply by talking to Dr. Simi. Here are 
   - *"Doctor, borra el botón de encendido de la tele."* (Context: "Doc, delete the TV power button.")
   - *"Doctor, ¿qué dispositivos infrarrojos tienes registrados?"* (Context: "Doc, what IR devices do you have registered?")
   - **Action**: Triggers `ir_transmit_command`, `ir_learn_button`, `ir_delete_device`, or `ir_get_devices`.
+- **Control Smart Devices (NetDiscovery / DIAL)**:
+  - *"Doctor, ponle pausa a la tele de la sala."* (Context: "Doc, pause the living room TV.")
+  - *"Doctor, abre Netflix en el proyector."* (Context: "Doc, open Netflix on the projector.")
+  - **Action**: Triggers `netdiscovery_control`.
 
 ---
 

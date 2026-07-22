@@ -1,26 +1,32 @@
+#include "semantic/IntentCanonicalizerTest.h"
 #include "semantic/IntentCanonicalizer.h"
-#include <algorithm>
-#include <cctype>
-#include <unordered_map>
+#include <iostream>
+#include <vector>
 
 namespace semantic {
 
-static std::string ToLower(const std::string& input) {
-    std::string result = input;
-    std::transform(result.begin(), result.end(), result.begin(),
-                   [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-    return result;
-}
+struct TestCase {
+    std::string inputAlias;
+    NetDiscovery::ActionId expectedId;
+};
 
-NetDiscovery::ActionId IntentCanonicalizer::Normalize(const std::string& rawIntent) const {
-    std::string lowerIntent = ToLower(rawIntent);
+bool RunIntentCanonicalizerTests() {
+    IntentCanonicalizer canonicalizer;
+    bool allPassed = true;
 
-    static const std::unordered_map<std::string, NetDiscovery::ActionId> s_aliasMap = {
+    std::vector<TestCase> testCases = {
+        // LaunchApplication Aliases
+        {"launch_app",         NetDiscovery::ActionId::LaunchApplication},
+        {"launch_application", NetDiscovery::ActionId::LaunchApplication},
+        {"open_app",           NetDiscovery::ActionId::LaunchApplication},
+        {"watch_netflix",      NetDiscovery::ActionId::LaunchApplication},
+        {"open_netflix",       NetDiscovery::ActionId::LaunchApplication},
+        {"LAUNCH_APP",         NetDiscovery::ActionId::LaunchApplication},
+
         // Power Controls
         {"power_on",           NetDiscovery::ActionId::PowerOn},
         {"turn_on",            NetDiscovery::ActionId::PowerOn},
         {"on",                 NetDiscovery::ActionId::PowerOn},
-
         {"power_off",          NetDiscovery::ActionId::PowerOff},
         {"turn_off",           NetDiscovery::ActionId::PowerOff},
         {"off",                NetDiscovery::ActionId::PowerOff},
@@ -29,73 +35,69 @@ NetDiscovery::ActionId IntentCanonicalizer::Normalize(const std::string& rawInte
         {"volume_up",          NetDiscovery::ActionId::VolumeUp},
         {"louder",             NetDiscovery::ActionId::VolumeUp},
         {"vol_up",             NetDiscovery::ActionId::VolumeUp},
-
         {"volume_down",        NetDiscovery::ActionId::VolumeDown},
         {"quieter",            NetDiscovery::ActionId::VolumeDown},
         {"vol_down",           NetDiscovery::ActionId::VolumeDown},
-
         {"set_volume",         NetDiscovery::ActionId::SetVolume},
         {"volume",             NetDiscovery::ActionId::SetVolume},
         {"get_volume",         NetDiscovery::ActionId::GetVolume},
-        {"read_volume",        NetDiscovery::ActionId::GetVolume},
 
         // Mute / Audio Controls
         {"mute",               NetDiscovery::ActionId::Mute},
         {"silence",            NetDiscovery::ActionId::Mute},
         {"activate_mute",      NetDiscovery::ActionId::Mute},
-
         {"unmute",             NetDiscovery::ActionId::Unmute},
         {"restore_audio",      NetDiscovery::ActionId::Unmute},
 
-        // Application Launching
-        {"launch_app",         NetDiscovery::ActionId::LaunchApplication},
-        {"launch_application", NetDiscovery::ActionId::LaunchApplication},
-        {"open_app",           NetDiscovery::ActionId::LaunchApplication},
-        {"watch_netflix",      NetDiscovery::ActionId::LaunchApplication},
-        {"open_netflix",       NetDiscovery::ActionId::LaunchApplication},
-
-        // Media Playback Controls
+        // Media Controls
         {"play",               NetDiscovery::ActionId::Play},
         {"resume",             NetDiscovery::ActionId::Play},
-
         {"pause",              NetDiscovery::ActionId::Pause},
         {"pause_media",        NetDiscovery::ActionId::Pause},
-
         {"stop",               NetDiscovery::ActionId::Stop},
         {"stop_media",         NetDiscovery::ActionId::Stop},
-
         {"next",               NetDiscovery::ActionId::Next},
         {"skip",               NetDiscovery::ActionId::Next},
-        {"next_track",         NetDiscovery::ActionId::Next},
-
         {"previous",           NetDiscovery::ActionId::Previous},
         {"back",               NetDiscovery::ActionId::Previous},
         {"prev",               NetDiscovery::ActionId::Previous},
-        {"prev_track",         NetDiscovery::ActionId::Previous},
-
-        {"seek",               NetDiscovery::ActionId::Seek},
 
         // Input & Key Controls
         {"select_input",       NetDiscovery::ActionId::SelectInput},
         {"change_input",       NetDiscovery::ActionId::SelectInput},
-        {"input",              NetDiscovery::ActionId::SelectInput},
-
         {"send_key",           NetDiscovery::ActionId::SendKey},
         {"press_button",       NetDiscovery::ActionId::SendKey},
-        {"key_press",          NetDiscovery::ActionId::SendKey},
 
         // System Diagnostics
         {"check_reachable",    NetDiscovery::ActionId::CheckReachable},
-        {"ping",               NetDiscovery::ActionId::CheckReachable}
+        {"ping",               NetDiscovery::ActionId::CheckReachable},
+
+        // Negative Test Cases
+        {"unknown_command_xyz",NetDiscovery::ActionId::Unknown},
+        {"invalid_action",     NetDiscovery::ActionId::Unknown}
     };
 
-    auto it = s_aliasMap.find(lowerIntent);
-    if (it != s_aliasMap.end()) {
-        return it->second;
+    int passedCount = 0;
+    int failedCount = 0;
+
+    for (const auto& tc : testCases) {
+        NetDiscovery::ActionId result = canonicalizer.Normalize(tc.inputAlias);
+        if (result == tc.expectedId) {
+            passedCount++;
+        } else {
+            failedCount++;
+            allPassed = false;
+            std::cout << "[REGRESSION TEST FAIL] Input: '" << tc.inputAlias 
+                      << "' -> Expected ActionId: " << static_cast<int>(tc.expectedId) 
+                      << " | Got: " << static_cast<int>(result) << std::endl;
+        }
     }
 
-    return NetDiscovery::ActionId::Unknown;
+    std::cout << "[IntentCanonicalizer Test Suite] Total: " << testCases.size() 
+              << " | Passed: " << passedCount 
+              << " | Failed: " << failedCount << std::endl;
+
+    return allPassed;
 }
 
 } // namespace semantic
-

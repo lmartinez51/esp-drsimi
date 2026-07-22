@@ -32,6 +32,7 @@
 #include "nvs_flash.h"
 #include "mute_handler.h"
 #include "prompts.h"
+#include "../../../components/net_discovery/include/NetDiscoveryMetrics.h"
 
 #include "esp_claw_init.h"
 #include "media_sys.h"
@@ -1600,6 +1601,58 @@ static class_t *build_ir_delete_device_class(void)
     return cls;
 }
 
+static class_t *build_netdiscovery_control_class(void)
+{
+    class_t *cls = calloc(1, sizeof(class_t));
+    if (!cls) return NULL;
+
+    static attribute_t properties[] = {
+        {
+            .name = "action",
+            .desc = "Action to perform on target device (e.g., 'power_on', 'power_off', 'pause', 'resume', 'mute', 'unmute', 'set_volume', 'launch_app', 'open_netflix').",
+            .type = ATTRIBUTE_TYPE_STRING,
+            .required = true,
+        },
+        {
+            .name = "target",
+            .desc = "Target network device name, class, or entity (e.g., 'living_room_tv', 'bedroom_television', 'projector', 'smart_speaker').",
+            .type = ATTRIBUTE_TYPE_STRING,
+            .required = true,
+        },
+        {
+            .name = "room",
+            .desc = "Optional room or location of the target device (e.g., 'living_room', 'bedroom', 'kitchen').",
+            .type = ATTRIBUTE_TYPE_STRING,
+            .required = false,
+        },
+        {
+            .name = "value",
+            .desc = "Optional value or parameter for the action (e.g., volume level '20', application name 'Netflix').",
+            .type = ATTRIBUTE_TYPE_STRING,
+            .required = false,
+        },
+    };
+
+    static char *required[] = {"action", "target"};
+
+    parameters_t params = {
+        .type = "object",
+        .properties = properties,
+        .properties_num = ELEMS(properties),
+        .required = (char **)required,
+        .required_num = ELEMS(required),
+    };
+
+    cls->type = "function";
+    cls->name = "netdiscovery_control";
+    cls->desc = "Controls smart home devices over the local network (NetDiscovery). Use this tool to send network actions (power, playback, volume, app launch) to smart TVs, media renderers, and IP devices.";
+    cls->parameters = params;
+    cls->attr_list = properties;
+    cls->attr_num = ELEMS(properties);
+
+    return cls;
+}
+
 static void add_class(class_t *cls)
 {
     if (classes == NULL)
@@ -1633,6 +1686,7 @@ static int build_classes(void)
     add_class(build_activate_mute_class());
     add_class(build_control_display_class());
     add_class(build_execute_automation_trigger_class());
+    add_class(build_netdiscovery_control_class());
     add_class(build_ir_learn_button_class());
     add_class(build_ir_transmit_command_class());
     add_class(build_ir_get_devices_class());
@@ -2943,6 +2997,114 @@ static int process_json(const char *json_data, int json_size)
                 }
                 break;
             }
+            else if (strcmp(iter->name, "netdiscovery_control") == 0 ||
+                     strcmp(iter->name, "netdiscovery_action") == 0 ||
+                     strcmp(iter->name, "netdiscovery_intent") == 0) {
+                cJSON *action_item = cJSON_GetObjectItemCaseSensitive(args_root, "action");
+                if (!action_item) action_item = cJSON_GetObjectItemCaseSensitive(args_root, "intent");
+                
+                cJSON *target_item = cJSON_GetObjectItemCaseSensitive(args_root, "target");
+                if (!target_item) target_item = cJSON_GetObjectItemCaseSensitive(args_root, "device_name");
+
+                cJSON *room_item = cJSON_GetObjectItemCaseSensitive(args_root, "room");
+                cJSON *entity_item = cJSON_GetObjectItemCaseSensitive(args_root, "entity_id");
+                cJSON *params_item = cJSON_GetObjectItemCaseSensitive(args_root, "parameters");
+
+                if (cJSON_IsString(action_item) && action_item->valuestring &&
+                    cJSON_IsString(target_item) && target_item->valuestring) {
+                    
+                    cJSON *value_item = cJSON_GetObjectItemCaseSensitive(args_root, "value");
+                    ESP_LOGI(TAG, "========== NETDISCOVERY TOOL ==========");
+                    ESP_LOGI(TAG, "action      : %s", action_item->valuestring ? action_item->valuestring : "");
+                    ESP_LOGI(TAG, "target      : %s", target_item->valuestring ? target_item->valuestring : "");
+                    ESP_LOGI(TAG, "room        : %s", (room_item && room_item->valuestring) ? room_item->valuestring : "");
+                    ESP_LOGI(TAG, "value       : %s", (value_item && value_item->valuestring) ? value_item->valuestring : "<null>");
+                    ESP_LOGI(TAG, "parameters  : %s", params_item ? "<provided>" : "<null>");
+                    ESP_LOGI(TAG, "=======================================");
+
+                    esp_claw_rule_t *nd_rule = heap_caps_malloc(sizeof(esp_claw_rule_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                    if (!nd_rule) nd_rule = malloc(sizeof(esp_claw_rule_t));
+
+                    if (nd_rule) {
+                        netdiscovery_log_ownership_event(0, call_id, "esp_claw_rule_t allocated in WebRTC task");
+                        memset(nd_rule, 0, sizeof(esp_claw_rule_t));
+                        strlcpy(nd_rule->call_id, call_id, sizeof(nd_rule->call_id));
+                        strlcpy(nd_rule->trigger, "LUA_TOOL_NETDISCOVERY", sizeof(nd_rule->trigger));
+
+                        strlcpy(nd_rule->actions[0].target, action_item->valuestring, sizeof(nd_rule->actions[0].target));
+                        strlcpy(nd_rule->actions[1].target, target_item->valuestring, sizeof(nd_rule->actions[1].target));
+                        if (cJSON_IsString(room_item) && room_item->valuestring) {
+                            strlcpy(nd_rule->actions[2].target, room_item->valuestring, sizeof(nd_rule->actions[2].target));
+                        }
+                        if (cJSON_IsString(entity_item) && entity_item->valuestring) {
+                            strlcpy(nd_rule->actions[3].target, entity_item->valuestring, sizeof(nd_rule->actions[3].target));
+                        }
+
+                        if (params_item && (cJSON_IsObject(params_item) || cJSON_IsString(params_item))) {
+                            ESP_LOGI(TAG, "[NETDISCOVERY] Using explicit parameters object.");
+                            if (cJSON_IsObject(params_item)) {
+                                char *p_str = cJSON_PrintUnformatted(params_item);
+                                if (p_str) {
+                                    strlcpy(nd_rule->actions[4].target, p_str, sizeof(nd_rule->actions[4].target));
+                                    cJSON_free(p_str);
+                                }
+                            } else if (cJSON_IsString(params_item) && params_item->valuestring) {
+                                strlcpy(nd_rule->actions[4].target, params_item->valuestring, sizeof(nd_rule->actions[4].target));
+                            }
+                        } else if (value_item && (cJSON_IsString(value_item) || cJSON_IsNumber(value_item))) {
+                            ESP_LOGI(TAG, "[NETDISCOVERY] No explicit parameters object. Normalizing schema 'value' field.");
+                            const char *val_str = NULL;
+                            char num_buf[32];
+                            if (cJSON_IsString(value_item) && value_item->valuestring) {
+                                val_str = value_item->valuestring;
+                            } else if (cJSON_IsNumber(value_item)) {
+                                snprintf(num_buf, sizeof(num_buf), "%g", value_item->valuedouble);
+                                val_str = num_buf;
+                            }
+
+                            if (val_str && val_str[0] != '\0') {
+                                cJSON *norm_obj = cJSON_CreateObject();
+                                if (norm_obj) {
+                                    cJSON_AddStringToObject(norm_obj, "name", val_str);
+                                    cJSON_AddStringToObject(norm_obj, "value", val_str);
+                                    char *p_str = cJSON_PrintUnformatted(norm_obj);
+                                    if (p_str) {
+                                        strlcpy(nd_rule->actions[4].target, p_str, sizeof(nd_rule->actions[4].target));
+                                        cJSON_free(p_str);
+                                    }
+                                    cJSON_Delete(norm_obj);
+                                }
+                            } else {
+                                strlcpy(nd_rule->actions[4].target, "{}", sizeof(nd_rule->actions[4].target));
+                            }
+                        } else {
+                            ESP_LOGI(TAG, "[NETDISCOVERY] No application or auxiliary parameter provided.");
+                            strlcpy(nd_rule->actions[4].target, "{}", sizeof(nd_rule->actions[4].target));
+                        }
+                        nd_rule->num_actions = 5;
+
+                        ESP_LOGI(TAG, "Normalized Parameters: %s", nd_rule->actions[4].target);
+                        ESP_LOGI(TAG, "IPC Posting Payload: call_id='%s' action='%s' target='%s' room='%s' parameters_json='%s'",
+                                 nd_rule->call_id, nd_rule->actions[0].target, nd_rule->actions[1].target,
+                                 nd_rule->actions[2].target, nd_rule->actions[4].target);
+
+                        netdiscovery_log_ownership_event(0, call_id, "esp_claw_rule_t posting to ESP-Claw queue");
+                        if (esp_claw_send_rule(nd_rule) != ESP_OK) {
+                            netdiscovery_log_ownership_event(0, call_id, "ESP-Claw queue full - esp_claw_rule_t freed");
+                            free(nd_rule);
+                            send_function_output(call_id, "{\"error\": \"System Busy\"}");
+                        } else {
+                            ESP_LOGI(TAG, "[0][%s] NetDiscovery rule queued for ESP-Claw (action: %s, target: %s)",
+                                     call_id, action_item->valuestring, target_item->valuestring);
+                        }
+                    } else {
+                        send_function_output(call_id, "{\"error\": \"Out of memory allocating NetDiscovery rule\"}");
+                    }
+                } else {
+                    send_function_output(call_id, "{\"error\": \"Missing required action or target string parameters\"}");
+                }
+                break;
+            }
             else
             {
                 // Si encontramos una clase pero no coincide con ninguna de las anteriores
@@ -2958,7 +3120,10 @@ static int process_json(const char *json_data, int json_size)
     {
         if (strcmp(name->valuestring, "list_automation_rules") == 0 ||
             strcmp(name->valuestring, "create_automation_rule") == 0 ||
-            strcmp(name->valuestring, "delete_automation_rule") == 0)
+            strcmp(name->valuestring, "delete_automation_rule") == 0 ||
+            strcmp(name->valuestring, "netdiscovery_control") == 0 ||
+            strcmp(name->valuestring, "netdiscovery_action") == 0 ||
+            strcmp(name->valuestring, "netdiscovery_intent") == 0)
         {
             start_automation_task(call_id, name->valuestring, arguments->valuestring);
             class_found = true;

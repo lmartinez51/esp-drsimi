@@ -1,6 +1,9 @@
 #include "ExecutionEngine.h"
+#include "esp_log.h"
 #include <iostream>
 #include <chrono>
+
+static const char* TAG = "ExecutionEngine";
 
 namespace NetDiscovery {
 
@@ -38,15 +41,17 @@ ExecutionResult ExecutionEngine::Execute(const ExecutionRequest& request) {
         if (activeController) {
             routeOpt = activeController->GetExecutionRoute(request.device, request.action);
             if (routeOpt.has_value()) {
-                std::cout << "  [ExecutionEngine] Controller '" << activeController->ControllerName() << "' returned a route.\n";
-                std::cout << "  [ExecutionEngine]   -> TransportFamily: " << ToString(routeOpt->transport) << "\n";
-                std::cout << "  [ExecutionEngine]   -> Metadata keys: " << routeOpt->metadata.size() << "\n";
-                if (routeOpt->preferredEndpoint) {
-                    std::cout << "  [ExecutionEngine]   -> Preferred Endpoint IP: " << routeOpt->preferredEndpoint->ip << "\n";
-                    if (routeOpt->preferredEndpoint->evidence.upnp.has_value()) {
-                        std::cout << "  [ExecutionEngine]      - UPnP Location: " << routeOpt->preferredEndpoint->evidence.upnp->locationUrl << "\n";
-                    }
+                ESP_LOGI(TAG, "========== EXECUTION ROUTE GENERATION DUMP ==========");
+                ESP_LOGI(TAG, "Target Entity : %s", request.device.displayName.c_str());
+                ESP_LOGI(TAG, "Action        : %s", ToString(request.action.id).c_str());
+                ESP_LOGI(TAG, "Capabilities  : %d enumerated", (int)request.device.capabilities.size());
+                ESP_LOGI(TAG, "Controller    : %s", activeController->ControllerName().c_str());
+                ESP_LOGI(TAG, "Transport     : %s", ToString(routeOpt->transport).c_str());
+                ESP_LOGI(TAG, "Metadata Count: %d", (int)routeOpt->metadata.size());
+                for (const auto& [k, v] : routeOpt->metadata) {
+                    ESP_LOGI(TAG, "  Metadata [%s] = %s", k.c_str(), v.c_str());
                 }
+                ESP_LOGI(TAG, "=====================================================");
                 break; // Found a controller that supports the action
             }
         }
@@ -70,6 +75,12 @@ ExecutionResult ExecutionEngine::Execute(const ExecutionRequest& request) {
         auto endTime = std::chrono::steady_clock::now();
         res.elapsedTimeMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count());
         return res;
+    }
+
+    ESP_LOGI(TAG, "Selected Controller : GenericDLNAController");
+    ESP_LOGI(TAG, "Selected Transport  : %s", ToString(routeOpt.value().transport).c_str());
+    if (routeOpt.value().metadata.find("Application-URL") != routeOpt.value().metadata.end()) {
+        ESP_LOGI(TAG, "Application URL     : %s", routeOpt.value().metadata.at("Application-URL").c_str());
     }
 
     // 3.5. Authentication

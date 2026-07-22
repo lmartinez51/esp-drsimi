@@ -24,6 +24,7 @@
 #include "esp_system.h"
 #include "webrtc.h"
 #include "NetDiscoveryIPC.h"
+#include "../../../components/net_discovery/include/NetDiscoveryMetrics.h"
 
 static const char *TAG = "ESP_CLAW_ISO";
 static QueueHandle_t s_test_queue = NULL;
@@ -148,18 +149,50 @@ static int l_send_webrtc_response(lua_State *L) {
     return 0;
 }
 
+static uint32_t s_next_request_id = 1000;
+
 static int l_send_intent(lua_State *L) {
-    if (lua_gettop(L) >= 2) {
-        const char* call_id = lua_tostring(L, 1);
-        const char* intent_json = lua_tostring(L, 2);
-        if (call_id && intent_json && netdiscovery_intent_queue) {
+    int top = lua_gettop(L);
+    if (top >= 3) {
+        const char* call_id         = lua_tostring(L, 1);
+        const char* action          = lua_tostring(L, 2);
+        const char* target          = lua_tostring(L, 3);
+        const char* room            = (top >= 4 && lua_tostring(L, 4)) ? lua_tostring(L, 4) : "";
+        const char* entity_id       = (top >= 5 && lua_tostring(L, 5)) ? lua_tostring(L, 5) : "";
+        const char* parameters_json = (top >= 6 && lua_tostring(L, 6)) ? lua_tostring(L, 6) : "{}";
+
+        if (call_id && action && target && netdiscovery_intent_queue) {
             netdiscovery_intent_t msg;
-            strncpy(msg.call_id, call_id, sizeof(msg.call_id)-1);
-            msg.call_id[sizeof(msg.call_id)-1] = '\0';
-            strncpy(msg.intent_json, intent_json, sizeof(msg.intent_json)-1);
-            msg.intent_json[sizeof(msg.intent_json)-1] = '\0';
-            xQueueSend(netdiscovery_intent_queue, &msg, pdMS_TO_TICKS(10));
+            memset(&msg, 0, sizeof(msg));
+            msg.version = NETDISCOVERY_IPC_VERSION;
+            msg.request_id = __atomic_fetch_add(&s_next_request_id, 1, __ATOMIC_RELAXED);
+
+            strlcpy(msg.call_id, call_id, sizeof(msg.call_id));
+            strlcpy(msg.action, action, sizeof(msg.action));
+            strlcpy(msg.target, target, sizeof(msg.target));
+            strlcpy(msg.room, room, sizeof(msg.room));
+            strlcpy(msg.entity_id, entity_id, sizeof(msg.entity_id));
+            strlcpy(msg.parameters_json, parameters_json, sizeof(msg.parameters_json));
+
+            netdiscovery_log_ownership_event(msg.request_id, msg.call_id, "netdiscovery_intent_t created in C-binding");
+
+            ESP_LOGI(TAG, "[%u][%s] C-binding posting intent: action='%s', target='%s', parameters_json='%s'",
+                     (unsigned)msg.request_id, msg.call_id, msg.action, msg.target, msg.parameters_json);
+
+            netdiscovery_log_ownership_event(msg.request_id, msg.call_id, "netdiscovery_intent_t pushing by value to queue");
+            if (xQueueSend(netdiscovery_intent_queue, &msg, 0) != pdTRUE) {
+                ESP_LOGE(TAG, "[%u][%s] NetDiscovery IPC queue full (non-blocking overflow trigger)", (unsigned)msg.request_id, msg.call_id);
+                netdiscovery_log_ownership_event(msg.request_id, msg.call_id, "queue push failed - netdiscovery_intent_t destroyed");
+                send_function_output(call_id, "{\"error\": \"System Busy\"}");
+                sendEvent("response.create", NULL);
+            } else {
+                netdiscovery_log_ownership_event(msg.request_id, msg.call_id, "netdiscovery_intent_t successfully queued");
+            }
+        } else {
+            ESP_LOGW(TAG, "[ESP_CLAW] c_send_intent missing required non-null parameters");
         }
+    } else {
+        ESP_LOGW(TAG, "[ESP_CLAW] c_send_intent requires at least 3 arguments (call_id, action, target)");
     }
     return 0;
 }

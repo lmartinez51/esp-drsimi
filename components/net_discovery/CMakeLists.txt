@@ -76,6 +76,7 @@ set(srcs
     
     # ── Phase 10: Semantic Execution Layer ────────────
     "src/semantic/IntentCanonicalizer.cpp"
+    "src/semantic/IntentCanonicalizerTest.cpp"
     "src/semantic/ParameterNormalizer.cpp"
     "src/semantic/LogicalEntityResolver.cpp"
     "src/semantic/DeviceMatcher.cpp"
@@ -83,6 +84,7 @@ set(srcs
     "src/semantic/WorkflowPlanner.cpp"
     "src/semantic/SemanticOrchestrator.cpp"
     "src/NetDiscoveryIPC.cpp"
+    "src/NetDiscoveryMetrics.cpp"
 )
 
 idf_component_register(

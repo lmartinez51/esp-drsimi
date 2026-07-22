@@ -4,8 +4,11 @@
  */
 
 #include "../../include/transports/DIALTransport.h"
+#include "esp_log.h"
 #include <chrono>
 #include <iostream>
+
+static const char* TAG = "DIALTransport";
 
 namespace NetDiscovery {
 
@@ -90,7 +93,10 @@ ExecutionResult DIALTransport::Execute(const ExecutionRequest& request,
 
     // Case A / Executing POST
     std::string launchUrl = applicationUrl + appName;
-    std::cout << "[DIALTransport] Attempting HTTP POST to: " << launchUrl << "\n";
+    
+    ESP_LOGI(TAG, "Application URL  : %s", applicationUrl.c_str());
+    ESP_LOGI(TAG, "Application Name : %s", appName.c_str());
+    ESP_LOGI(TAG, "Final URL        : %s", launchUrl.c_str());
     
     std::map<std::string, std::string> dialHeaders = {
         {"Origin", "package:com.netdiscovery"},
@@ -104,7 +110,11 @@ ExecutionResult DIALTransport::Execute(const ExecutionRequest& request,
         return result;
     }
     HttpResponse postRes = postResOpt.value();
-    std::cout << "[DIALTransport] HTTP POST returned status code: " << postRes.statusCode << "\n";
+    
+    ESP_LOGI(TAG, "HTTP Method      : POST");
+    ESP_LOGI(TAG, "URL              : %s", launchUrl.c_str());
+    ESP_LOGI(TAG, "Response Status  : %d", postRes.statusCode);
+    ESP_LOGI(TAG, "Response Body    : %s", postRes.body.c_str());
 
     if (postRes.statusCode == 200 || postRes.statusCode == 201) {
         result.status = ExecutionStatus::Success;

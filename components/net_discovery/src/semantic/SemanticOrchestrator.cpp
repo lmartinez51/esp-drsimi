@@ -1,6 +1,9 @@
 #include "semantic/SemanticOrchestrator.h"
+#include "esp_log.h"
 #include <iostream>
 #include <thread>
+
+static const char* TAG = "SemanticOrchestrator";
 
 namespace semantic {
 
@@ -54,6 +57,21 @@ SemanticError SemanticOrchestrator::Orchestrate(const SemanticRequest& request,
     ExecutionPlan plan = m_workflowPlanner.CreatePlan(canonicalIntent, targetDevice, params);
     if (plan.steps.empty()) {
         return SemanticError::WorkflowGenerationFailed;
+    }
+
+    ESP_LOGI(TAG, "ActionId       : %s", NetDiscovery::ToString(canonicalIntent).c_str());
+    ESP_LOGI(TAG, "Target Device  : %s", targetDevice.displayName.c_str());
+    ESP_LOGI(TAG, "Execution Parameters:");
+    for (const auto& [k, v] : params) {
+        if (std::holds_alternative<std::string>(v)) {
+            ESP_LOGI(TAG, "  %s = %s", k.c_str(), std::get<std::string>(v).c_str());
+        } else if (std::holds_alternative<int>(v)) {
+            ESP_LOGI(TAG, "  %s = %d", k.c_str(), std::get<int>(v));
+        } else if (std::holds_alternative<double>(v)) {
+            ESP_LOGI(TAG, "  %s = %g", k.c_str(), std::get<double>(v));
+        } else if (std::holds_alternative<bool>(v)) {
+            ESP_LOGI(TAG, "  %s = %s", k.c_str(), std::get<bool>(v) ? "true" : "false");
+        }
     }
 
     // 7. Orchestration Loop

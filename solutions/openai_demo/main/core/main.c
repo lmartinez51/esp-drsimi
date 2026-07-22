@@ -75,6 +75,7 @@
 #include "alert_dispatcher.h"
 #include "aht30.h"
 #include "hardware/ir_sniffer.h"
+#include "network_storage.h"
 
 /* ── Orchestrator Sub-Modules ───────────────────────────────────────────── */
 #include "sensor_dock.h"
@@ -347,11 +348,20 @@ void app_main(void)
     debug_nvs_contents(current_ssid);
     list_all_ble_devices_from_nvs();
     list_all_characteristics_from_nvs();
+
+    // Delete all API keys from NVS
     esp_err_t error = nvs_delete_api_key();
     if (error == ESP_OK) {
         ESP_LOGI(TAG, "API Key eliminada de NVS");
     } else {
         ESP_LOGE(TAG, "Error al eliminar: %s", esp_err_to_name(error));
+    }
+
+    esp_err_t error2 = network_delete_all_wifi_credentials();
+    if (error2 == ESP_OK) {
+        ESP_LOGI(TAG, "WiFi credentials eliminadas de NVS");
+    } else {
+        ESP_LOGE(TAG, "Error al eliminar WiFi credentials: %s", esp_err_to_name(error2));
     }
     vTaskDelay(pdMS_TO_TICKS(500));
     list_api_keys_from_nvs();

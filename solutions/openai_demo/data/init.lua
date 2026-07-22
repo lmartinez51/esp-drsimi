@@ -442,6 +442,35 @@ function register_rule(rule)
         return
 
     -- -------------------------------------------------------------------------
+    -- LLM Tool: NetDiscovery Action Execution
+    -- -------------------------------------------------------------------------
+    elseif trigger == "LUA_TOOL_NETDISCOVERY" then
+        local action = (rule.actions and rule.actions[1]) or ""
+        local target = (rule.actions and rule.actions[2]) or ""
+        local room = (rule.actions and rule.actions[3]) or ""
+        local entity_id = (rule.actions and rule.actions[4]) or ""
+        local parameters_json = (rule.actions and rule.actions[5]) or "{}"
+
+        print("LUA_TOOL_NETDISCOVERY: action='" .. action .. "' target='" .. target .. "' room='" .. room .. "' parameters_json='" .. parameters_json .. "'")
+
+        if action == "" or target == "" then
+            if c_send_webrtc_response then
+                c_send_webrtc_response(rule.call_id, '{"error": "LUA_TOOL_NETDISCOVERY requires both action and target arguments."}')
+            end
+            return
+        end
+
+        if c_send_intent then
+            print("[LUA_BRIDGE] Calling c_send_intent with parameters_json: " .. parameters_json)
+            c_send_intent(rule.call_id, action, target, room, entity_id, parameters_json)
+        else
+            if c_send_webrtc_response then
+                c_send_webrtc_response(rule.call_id, '{"error": "c_send_intent C-binding not found"}')
+            end
+        end
+        return
+
+    -- -------------------------------------------------------------------------
     -- System Commands: Execute / IR Direct (stub responses)
     -- -------------------------------------------------------------------------
     elseif trigger == "SYS_CMD:EXECUTE" or trigger == "SYS_CMD:IR_DIRECT" then
