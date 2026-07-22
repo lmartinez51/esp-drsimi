@@ -83,20 +83,33 @@ std::vector<NetDiscovery::LogicalDevice> DeviceMatcher::Match(const std::string&
         bool nameContainsTarget = (lowerName.find(lowerTarget) != std::string::npos);
         bool targetContainsName = (lowerTarget.find(lowerName) != std::string::npos);
         bool targetContainsMfg = (!lowerManufacturer.empty() && lowerTarget.find(lowerManufacturer) != std::string::npos);
-        bool targetContainsMfgEmptyBug = (lowerManufacturer.empty() && lowerTarget.find(lowerManufacturer) != std::string::npos);
 
-        if (nameContainsTarget || targetContainsName || targetContainsMfg || targetContainsMfgEmptyBug) {
+        if (nameContainsTarget || targetContainsName || targetContainsMfg) {
+            // Guard: Reject devices that have no capabilities and no non-rejected controllers
+            bool hasValidController = false;
+            for (const auto& ctrl : device.controllerCandidates) {
+                if (!ctrl.isRejected && ctrl.name != "UnknownController") {
+                    hasValidController = true;
+                    break;
+                }
+            }
+
+            if (device.capabilities.empty() && !hasValidController) {
+                score = 0.0;
+                reason = "Rejected: Device has no control capabilities or valid controller candidates";
+                ESP_LOGI(TAG, "  TOTAL SCORE    : 0.00");
+                ESP_LOGI(TAG, "  Decision       : REJECTED (%s)", reason.c_str());
+                ESP_LOGI(TAG, "---------------------------------------------------------------");
+                continue;
+            }
+
             score = 0.95;
             if (nameContainsTarget) reason = "lowerName contains lowerTarget";
             else if (targetContainsName) reason = "lowerTarget contains lowerName";
             else if (targetContainsMfg) reason = "lowerTarget contains lowerManufacturer";
-            else if (targetContainsMfgEmptyBug) reason = "Empty manufacturer empty-string match bug";
 
             accepted = true;
             ESP_LOGI(TAG, "  Score Increment: +0.95 [Substring Match]");
-            if (targetContainsMfgEmptyBug) {
-                ESP_LOGW(TAG, "  WARNING: Empty manufacturer matching empty string inside target!");
-            }
             ESP_LOGI(TAG, "  TOTAL SCORE    : %.2f", score);
             ESP_LOGI(TAG, "  Decision       : ACCEPTED (%s)", reason.c_str());
             ESP_LOGI(TAG, "---------------------------------------------------------------");

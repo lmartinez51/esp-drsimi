@@ -331,6 +331,10 @@ int send_function_output(const char *call_id, const char *output)
         if (err == ESP_OK)
         {
             ret = 0;
+            // Automatically trigger response.create so OpenAI generates an audio response
+            // speaking the function output result or error back to the user.
+            webrtc_send_json("{\"type\":\"response.create\"}");
+            ESP_LOGI(TAG, "send_function_output: Sent function_call_output and triggered response.create for call_id: %s", call_id);
         }
         else
         {

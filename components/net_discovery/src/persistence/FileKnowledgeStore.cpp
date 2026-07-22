@@ -110,7 +110,7 @@ std::vector<std::string> FileKnowledgeStore::LoadAllEntities(const std::string& 
         }
         closedir(dir);
     } else {
-        ESP_LOGE(TAG, "[FileKnowledgeStore] Failed to open directory: %s", netDir.c_str());
+        ESP_LOGD(TAG, "[FileKnowledgeStore] Directory does not exist yet: %s", netDir.c_str());
     }
 
     return entities;
@@ -138,16 +138,20 @@ std::string FileKnowledgeStore::GetEntityFilePath(const std::string& networkId, 
 }
 
 bool FileKnowledgeStore::EnsureDirectoryExists(const std::string& path) const {
-    // Caller verification: FileKnowledgeStore only calls this with m_baseDir 
-    // or GetNetworkDir() (e.g. "/littlefs/knowledge/SSID"). It is never called 
-    // with a full file path (e.g. ending in .json).
     struct stat st;
     if (stat(path.c_str(), &st) == 0) {
         return true; // Directory already exists
     }
     
+    // Recursively ensure parent directory exists
+    size_t pos = path.find_last_of("/\\");
+    if (pos != std::string::npos && pos > 0) {
+        std::string parent = path.substr(0, pos);
+        EnsureDirectoryExists(parent);
+    }
+
     // Create directory since it's now safe from Internal RAM
-    if (mkdir(path.c_str(), 0777) == 0) {
+    if (mkdir(path.c_str(), 0777) == 0 || errno == EEXIST) {
         return true;
     }
     

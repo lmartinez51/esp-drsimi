@@ -160,7 +160,17 @@ public:
         if (!keyName.empty()) {
             ExecutionRoute route;
             route.transport = TransportFamily::WebSocket;
-            route.metadata["WebSocket-Host"] = device.primaryIp;
+            
+            std::string hostIp = device.primaryIp;
+            if (hostIp.empty()) {
+                for (const auto& ep : device.endpoints) {
+                    if (!ep.ip.empty()) {
+                        hostIp = ep.ip;
+                        break;
+                    }
+                }
+            }
+            route.metadata["WebSocket-Host"] = hostIp;
             route.metadata["WebSocket-Port"] = "8001";
             
             // Assign the strategy to handle request building and response processing

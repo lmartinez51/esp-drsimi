@@ -235,9 +235,16 @@ static void netdiscovery_ipc_listener_task(void* arg) {
                     send_function_output(msg.call_id, response_buf);
                 } else {
                     ESP_LOGW(TAG, "[%u][%s] Stage 7 (Completion Stub): Error code %d", (unsigned)msg.request_id, msg.call_id, static_cast<int>(err));
-                    char errStr[128];
-                    snprintf(errStr, sizeof(errStr), "{\"error\":\"semantic_error_%d\",\"request_id\":%u}",
-                             static_cast<int>(err), (unsigned)msg.request_id);
+                    char errStr[256];
+                    const char* reasonStr = (err == semantic::SemanticError::DeviceNotFound) 
+                        ? "Target device not found or offline" 
+                        : (err == semantic::SemanticError::MissingCapability)
+                        ? "Target device found, but does not support requested capability or feature"
+                        : (err == semantic::SemanticError::ExecutionFailed)
+                        ? "Target device was found on network, but network command connection was refused or failed"
+                        : "Execution failed";
+                    snprintf(errStr, sizeof(errStr), "{\"error\":\"semantic_error_%d\",\"reason\":\"%s\",\"request_id\":%u}",
+                             static_cast<int>(err), reasonStr, (unsigned)msg.request_id);
                     send_function_output(msg.call_id, errStr);
                 }
 
@@ -253,7 +260,7 @@ static void netdiscovery_ipc_listener_task(void* arg) {
                 netdiscovery_log_ownership_event(msg.request_id, msg.call_id, "intent processing complete - destroyed");
             };
 
-            NetDiscovery::ThreadHelper::StartPinnedThread("nd_exec", 8192, 4, 0, execution_lambda);
+            NetDiscovery::ThreadHelper::StartInternalPinnedThread("nd_exec", 6144, 4, 0, execution_lambda);
         }
     }
 }
