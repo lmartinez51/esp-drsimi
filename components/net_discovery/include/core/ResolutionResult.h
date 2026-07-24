@@ -1,35 +1,46 @@
 /**
  * @file ResolutionResult.h
- * @brief The final result of a controller evaluation for a device.
+ * @brief Explicit resolution result structure for EntityResolutionEngine.
  */
 
 #pragma once
 
-#include "ControllerCandidate.h"
-#include "ResolutionDiagnostics.h"
-#include "../IDeviceController.h"
+#include <string>
 #include <vector>
 
 namespace NetDiscovery {
 
 /**
- * @brief Outcome of evaluating a device through the Controller Resolver Engine.
+ * @brief Action determined by the resolution pipeline.
+ */
+enum class ResolutionAction {
+    ExistingEntity,   // Observation matched an existing canonical entity; entity was merged
+    NewEntity,        // Observation resulted in a new canonical entity creation
+    MergeEntities,    // Observation resolved multiple candidate records into one merged entity
+    Conflict          // Contradictory identities detected (requires manual or AI resolution)
+};
+
+/**
+ * @brief Converts ResolutionAction to a printable string.
+ */
+inline std::string ToString(ResolutionAction action) {
+    switch (action) {
+        case ResolutionAction::ExistingEntity: return "ExistingEntity";
+        case ResolutionAction::NewEntity:      return "NewEntity";
+        case ResolutionAction::MergeEntities:   return "MergeEntities";
+        case ResolutionAction::Conflict:        return "Conflict";
+        default:                                return "Unknown";
+    }
+}
+
+/**
+ * @brief Explicit outcome of an observation resolution operation.
  */
 struct ResolutionResult {
-    /// The best matching controller (can be nullptr if no match).
-    const IDeviceController* winner{nullptr};
-    
-    /// The second best matching controller (can be nullptr).
-    const IDeviceController* runnerUp{nullptr};
-    
-    /// All evaluated candidates.
-    std::vector<ControllerCandidate> candidates;
-    
-    /// Diagnostics for the winning controller.
-    ResolutionDiagnostics diagnostics;
-    
-    /// Final confidence score for the winning controller (0-100).
-    int confidence{0};
+    ResolutionAction action{ResolutionAction::NewEntity};
+    std::string entityId;
+    float confidence{0.0f};
+    std::vector<std::string> matchedRules;
 };
 
 } // namespace NetDiscovery

@@ -25,8 +25,7 @@ enum class ActionId {
     Previous,
     Seek,
     SelectInput,
-    SendKey, 
-    CheckReachable
+    SendKey
 };
 
 inline std::string ToString(ActionId id) {
@@ -48,7 +47,6 @@ inline std::string ToString(ActionId id) {
         case ActionId::Seek: return "Seek";
         case ActionId::SelectInput: return "SelectInput";
         case ActionId::SendKey: return "SendKey";
-        case ActionId::CheckReachable: return "CheckReachable";
         default: return "Unknown";
     }
 }
@@ -71,7 +69,6 @@ inline ActionId FromString(const std::string& str) {
     if (str == "Seek") return ActionId::Seek;
     if (str == "SelectInput") return ActionId::SelectInput;
     if (str == "SendKey") return ActionId::SendKey;
-    if (str == "CheckReachable") return ActionId::CheckReachable;
     // Handle parameterized forms from legacy ActionResolver
     if (str == "SetVolume(level)") return ActionId::SetVolume;
     if (str == "LaunchApplication(name)") return ActionId::LaunchApplication;

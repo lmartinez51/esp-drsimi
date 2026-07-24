@@ -140,13 +140,6 @@ public:
             keyName = "KEY_POWER";
         } else if (action.id == ActionId::SendKey) {
             keyName = "KEY_UNKNOWN"; // We would normally extract the key from params
-        } else if (action.id == ActionId::CheckReachable) {
-            ExecutionRoute route;
-            route.transport = TransportFamily::Unknown;
-            if (!device.endpoints.empty()) {
-                route.preferredEndpoint = &device.endpoints[0];
-            }
-            return route;
         } else if (action.id == ActionId::VolumeUp) {
             keyName = "KEY_VOLUP";
         } else if (action.id == ActionId::VolumeDown) {

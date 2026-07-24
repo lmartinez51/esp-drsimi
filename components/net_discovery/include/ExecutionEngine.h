@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include "core/BoundExecutionRequest.h"
 #include "core/ExecutionRequest.h"
 #include "core/ExecutionResult.h"
 #include "TransportSelector.h"
@@ -20,7 +21,10 @@ public:
                     const ControllerRegistry& controllerRegistry,
                     std::shared_ptr<AuthenticationManager> authManager = nullptr);
 
-    ExecutionResult Execute(const ExecutionRequest& request);
+    /**
+     * @brief Single pure execution entry point.
+     */
+    ExecutionResult Execute(const BoundExecutionRequest& request);
 
 private:
     TransportSelector transportSelector;

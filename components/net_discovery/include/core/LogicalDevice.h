@@ -112,6 +112,10 @@ struct LogicalDevice {
     // ----------------------------------------------------------------
     DeviceFingerprint fingerprint; // Legacy fingerprint (to be phased out)
     DeviceSignature signature;     // Fully normalized protocol-independent identity
+
+    bool operator==(const LogicalDevice& o) const {
+        return id == o.id;
+    }
 };
 
 } // namespace NetDiscovery

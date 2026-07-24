@@ -62,6 +62,12 @@ void KnowledgeStore::UpdateFromDiscovery(const LogicalDevice& liveDevice) {
         newEntity.firstDiscovered = now;
         newEntity.lastSeen = now;
         
+        newEntity.identity.vendor = liveDevice.manufacturer;
+        newEntity.identity.model = liveDevice.model;
+        newEntity.identity.serialNumber = liveDevice.serialNumber;
+        newEntity.normalizedServices = liveDevice.normalizedServices;
+        newEntity.services = liveDevice.services;
+        
         for (const auto& candidate : liveDevice.controllerCandidates) {
             newEntity.compatibleControllers.push_back(candidate);
         }
@@ -78,6 +84,11 @@ void KnowledgeStore::UpdateFromDiscovery(const LogicalDevice& liveDevice) {
         if (!liveDevice.displayName.empty()) {
             existing.displayName = liveDevice.displayName;
         }
+        if (!liveDevice.manufacturer.empty()) existing.identity.vendor = liveDevice.manufacturer;
+        if (!liveDevice.model.empty()) existing.identity.model = liveDevice.model;
+        if (!liveDevice.serialNumber.empty()) existing.identity.serialNumber = liveDevice.serialNumber;
+        existing.normalizedServices = liveDevice.normalizedServices;
+        existing.services = liveDevice.services;
         existing.primaryClass = liveDevice.primaryClass;
         existing.roles = liveDevice.roles; // Overwrite
         
@@ -186,16 +197,7 @@ void KnowledgeStore::MergeEndpoints(KnowledgeEntity& existing, const std::vector
 
 void KnowledgeStore::MergeCapabilities(KnowledgeEntity& existing, const std::vector<Capability>& liveCaps) {
     for (const auto& liveCap : liveCaps) {
-        bool found = false;
-        for (const auto& existCap : existing.capabilities) {
-            if (existCap == liveCap) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            existing.capabilities.push_back(liveCap);
-        }
+        existing.capabilities.AddCapability(liveCap);
     }
 }
 
@@ -260,16 +262,17 @@ std::string KnowledgeStore::SerializeEntity(const KnowledgeEntity& entity) const
         oss << "\n";
     }
 
-    if (!entity.capabilities.empty()) {
+    auto caps = entity.capabilities.GetCapabilities();
+    if (!caps.empty()) {
         oss << "CAPABILITIES=";
-        for (size_t i = 0; i < entity.capabilities.size(); ++i) {
-            oss << static_cast<int>(entity.capabilities[i]) << (i + 1 == entity.capabilities.size() ? "" : ",");
+        for (size_t i = 0; i < caps.size(); ++i) {
+            oss << caps[i].id << (i + 1 == caps.size() ? "" : ",");
         }
         oss << "\n";
     }
 
     for (const auto& profile : entity.capabilityProfiles) {
-        oss << "CPROFILE=" << static_cast<int>(profile.capability) << "|" << profile.globalConstraints;
+        oss << "CPROFILE=" << profile.capability.id << "|" << profile.globalConstraints;
         for (const auto& act : profile.supportedActions) {
             oss << "|" << static_cast<int>(act.actionId) << ":" 
                 << static_cast<int>(act.supportState) << ":" 
@@ -344,7 +347,7 @@ KnowledgeEntity KnowledgeStore::DeserializeEntity(const std::string& data) const
                 std::istringstream css(val);
                 std::string c;
                 while (std::getline(css, c, ',')) {
-                    if (!c.empty()) entity.capabilities.push_back(static_cast<Capability>(std::strtol(c.c_str(), nullptr, 10)));
+                    if (!c.empty()) entity.capabilities.AddCapability(static_cast<Capability>(std::strtol(c.c_str(), nullptr, 10)));
                 }
             }
             else if (key == "CPROFILE") {
@@ -356,7 +359,7 @@ KnowledgeEntity KnowledgeStore::DeserializeEntity(const std::string& data) const
                 }
                 if (parts.size() >= 2) {
                     CapabilityProfile profile;
-                    profile.capability = static_cast<Capability>(std::strtol(parts[0].c_str(), nullptr, 10));
+                    profile.capability = Capability(parts[0]);
                     profile.globalConstraints = std::strtoul(parts[1].c_str(), nullptr, 10);
                     for (size_t i = 2; i < parts.size(); ++i) {
                         std::istringstream ass(parts[i]);

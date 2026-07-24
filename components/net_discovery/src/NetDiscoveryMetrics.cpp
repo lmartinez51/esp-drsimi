@@ -36,14 +36,16 @@ void netdiscovery_print_memory_report(const char* label, const netdiscovery_memo
 
 void netdiscovery_print_latency_report(uint32_t request_id, const char* call_id, const netdiscovery_pipeline_timestamps_t* ts) {
     if (!ts) return;
-    int64_t webrtc_to_claw = (ts->t1_claw_enqueue > ts->t0_webrtc_recv) ? (ts->t1_claw_enqueue - ts->t0_webrtc_recv) / 1000 : 0;
-    int64_t claw_to_lua    = (ts->t2_lua_recv > ts->t1_claw_enqueue)     ? (ts->t2_lua_recv - ts->t1_claw_enqueue) / 1000 : 0;
-    int64_t lua_to_ipc     = (ts->t3_ipc_push > ts->t2_lua_recv)         ? (ts->t3_ipc_push - ts->t2_lua_recv) / 1000 : 0;
-    int64_t ipc_pop_delay  = (ts->t4_ipc_pop > ts->t3_ipc_push)          ? (ts->t4_ipc_pop - ts->t3_ipc_push) / 1000 : 0;
-    int64_t validator_time = (ts->t5_validator_done > ts->t4_ipc_pop)   ? (ts->t5_validator_done - ts->t4_ipc_pop) / 1000 : 0;
-    int64_t semantic_time  = (ts->t6_semantic_done > ts->t5_validator_done) ? (ts->t6_semantic_done - ts->t5_validator_done) / 1000 : 0;
-    int64_t response_time  = (ts->t7_response_sent > ts->t6_semantic_done)  ? (ts->t7_response_sent - ts->t6_semantic_done) / 1000 : 0;
-    int64_t total_pipeline = (ts->t7_response_sent > ts->t0_webrtc_recv)    ? (ts->t7_response_sent - ts->t0_webrtc_recv) / 1000 : 0;
+    int64_t webrtc_to_claw = (ts->t0_webrtc_recv > 0 && ts->t1_claw_enqueue > ts->t0_webrtc_recv) ? (ts->t1_claw_enqueue - ts->t0_webrtc_recv) / 1000 : 0;
+    int64_t claw_to_lua    = (ts->t1_claw_enqueue > 0 && ts->t2_lua_recv > ts->t1_claw_enqueue)     ? (ts->t2_lua_recv - ts->t1_claw_enqueue) / 1000 : 0;
+    int64_t lua_to_ipc     = (ts->t2_lua_recv > 0 && ts->t3_ipc_push > ts->t2_lua_recv)         ? (ts->t3_ipc_push - ts->t2_lua_recv) / 1000 : 0;
+    int64_t ipc_pop_delay  = (ts->t3_ipc_push > 0 && ts->t4_ipc_pop > ts->t3_ipc_push)          ? (ts->t4_ipc_pop - ts->t3_ipc_push) / 1000 : 0;
+    int64_t validator_time = (ts->t4_ipc_pop > 0 && ts->t5_validator_done > ts->t4_ipc_pop)   ? (ts->t5_validator_done - ts->t4_ipc_pop) / 1000 : 0;
+    int64_t semantic_time  = (ts->t5_validator_done > 0 && ts->t6_semantic_done > ts->t5_validator_done) ? (ts->t6_semantic_done - ts->t5_validator_done) / 1000 : 0;
+    int64_t response_time  = (ts->t6_semantic_done > 0 && ts->t7_response_sent > ts->t6_semantic_done)  ? (ts->t7_response_sent - ts->t6_semantic_done) / 1000 : 0;
+    
+    int64_t baseline_t = (ts->t0_webrtc_recv > 0) ? ts->t0_webrtc_recv : ts->t4_ipc_pop;
+    int64_t total_pipeline = (baseline_t > 0 && ts->t7_response_sent > baseline_t) ? (ts->t7_response_sent - baseline_t) / 1000 : 0;
 
     ESP_LOGI(TAG, "========================================================");
     ESP_LOGI(TAG, "Pipeline Latency Report [%u][%s]", (unsigned)request_id, call_id ? call_id : "N/A");
@@ -57,7 +59,7 @@ void netdiscovery_print_latency_report(uint32_t request_id, const char* call_id,
     ESP_LOGI(TAG, "TOTAL PIPELINE LATENCY   : %lld ms", (long long)total_pipeline);
     ESP_LOGI(TAG, "========================================================");
 
-    if (total_pipeline > 50) {
+    if (total_pipeline > 50 && ts->t0_webrtc_recv > 0) {
         ESP_LOGW(TAG, "[AUDIO SAFETY WARNING] Total pipeline latency (%lld ms) exceeded 50ms threshold for request_id=%u", (long long)total_pipeline, (unsigned)request_id);
     }
 }

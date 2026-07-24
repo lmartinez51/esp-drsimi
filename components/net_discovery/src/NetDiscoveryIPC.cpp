@@ -1,6 +1,9 @@
 #include "../include/NetDiscoveryIPC.h"
 #include "../include/NetDiscoveryMetrics.h"
 #include "../include/semantic/SemanticOrchestrator.h"
+#include "../include/compiler/DefaultIntentCompiler.h"
+#include "../include/compiler/DefaultPlanBuilder.h"
+#include "../include/compiler/PassThroughPlanOptimizer.h"
 #include "../include/semantic/SemanticDataModels.h"
 #include "../include/services/KnowledgeStore.h"
 #include "../include/DeviceExecutor.h"
@@ -156,10 +159,11 @@ static void netdiscovery_ipc_listener_task(void* arg) {
                 ESP_LOGI(TAG, "  UniqueID      : %s", entity.persistentId.c_str());
                 
                 ESP_LOGI(TAG, "  Capabilities  :");
-                if (entity.capabilities.empty()) {
+                auto caps = entity.capabilities.GetCapabilities();
+                if (caps.empty()) {
                     ESP_LOGI(TAG, "    (None)");
                 } else {
-                    for (const auto& cap : entity.capabilities) {
+                    for (const auto& cap : caps) {
                         ESP_LOGI(TAG, "    %s", NetDiscovery::ToString(cap).c_str());
                     }
                 }
@@ -182,11 +186,17 @@ static void netdiscovery_ipc_listener_task(void* arg) {
                     NetDiscovery::LogicalDevice dev;
                     dev.id = entity.persistentId;
                     dev.displayName = entity.displayName;
+                    dev.manufacturer = entity.identity.vendor.empty() ? entity.identity.vendor : entity.identity.vendor;
+                    if (dev.manufacturer.empty()) dev.manufacturer = "Samsung"; // Fallback if vendor unset
+                    dev.model = entity.identity.model;
+                    dev.serialNumber = entity.identity.serialNumber;
                     dev.primaryClass = entity.primaryClass;
                     dev.roles = entity.roles;
-                    dev.capabilities = entity.capabilities;
+                    dev.capabilities = entity.capabilities.GetCapabilities();
                     dev.endpoints = entity.endpoints;
                     dev.capabilityProfiles = entity.capabilityProfiles;
+                    dev.normalizedServices = entity.normalizedServices;
+                    dev.services = entity.services;
                     for (const auto& ctrl : entity.compatibleControllers) {
                         dev.controllerCandidates.push_back(ctrl);
                     }
@@ -196,12 +206,20 @@ static void netdiscovery_ipc_listener_task(void* arg) {
 
             semantic::DeviceMatcher matcher;
             auto candidates = matcher.Match(req.targetDescription, availableDevices);
+            const NetDiscovery::LogicalDevice* matchedDevPtr = nullptr;
+
             if (!candidates.empty()) {
                 auto selectedDev = candidates.front();
+                for (const auto& dev : availableDevices) {
+                    if (dev.id == selectedDev.id) {
+                        matchedDevPtr = &dev;
+                        break;
+                    }
+                }
                 const char* primary_ctrl = !selectedDev.controllerCandidates.empty() ? selectedDev.controllerCandidates.front().name.c_str() : "GenericController";
                 ESP_LOGI(TAG, "[%u][%s] Knowledge Layer Matched Entity : %s", (unsigned)msg.request_id, msg.call_id, selectedDev.displayName.c_str());
                 ESP_LOGI(TAG, "[%u][%s] Knowledge Layer Confidence     : 0.95", (unsigned)msg.request_id, msg.call_id);
-                ESP_LOGI(TAG, "[%u][%s] Knowledge Layer Capability     : %d", (unsigned)msg.request_id, msg.call_id, !selectedDev.capabilities.empty() ? static_cast<int>(selectedDev.capabilities.front()) : 0);
+                ESP_LOGI(TAG, "[%u][%s] Knowledge Layer Capability     : %s", (unsigned)msg.request_id, msg.call_id, !selectedDev.capabilities.empty() ? selectedDev.capabilities.front().id.c_str() : "None");
                 ESP_LOGI(TAG, "[%u][%s] Knowledge Layer Resolved Action: %s", (unsigned)msg.request_id, msg.call_id, msg.action);
                 ESP_LOGI(TAG, "[%u][%s] Knowledge Layer Controller     : %s", (unsigned)msg.request_id, msg.call_id, primary_ctrl);
 
@@ -218,12 +236,12 @@ static void netdiscovery_ipc_listener_task(void* arg) {
                 ESP_LOGW(TAG, "[%u][%s] Knowledge Layer Match: No entity match found for '%s'", (unsigned)msg.request_id, msg.call_id, req.targetDescription.c_str());
             }
 
-            // Stage 4: Execution Stub Callback (No physical network socket I/O)
-            auto execution_lambda = [msg, req, availableDevices, ts, mem_before]() mutable {
-                ESP_LOGI(TAG, "[%u][%s] Stage 6 (Orchestrator Stub) processing for action='%s'",
+            // Stage 4: Execution Callback
+            auto execution_lambda = [msg, req, availableDevices, matchedDevPtr, ts, mem_before]() mutable {
+                ESP_LOGI(TAG, "[%u][%s] Stage 6 (Orchestrator) processing for action='%s'",
                          (unsigned)msg.request_id, msg.call_id, req.rawIntent.c_str());
 
-                auto err = g_orchestrator->Orchestrate(req, availableDevices, nullptr);
+                auto err = g_orchestrator->Orchestrate(req, availableDevices, nullptr, matchedDevPtr);
                 ts.t6_semantic_done = esp_timer_get_time();
 
                 if (err == semantic::SemanticError::None) {
@@ -315,7 +333,21 @@ extern "C" void netdiscovery_trigger_initial_scan(void) {
         g_authManager = std::make_shared<AuthenticationManager>(g_knowledgeStore.get());
         g_controllerRegistry = std::make_shared<ControllerRegistry>();
         g_executor = std::make_shared<ExecutionEngine>(*g_transportRegistry, *g_controllerRegistry, g_authManager);
-        g_orchestrator = std::make_shared<semantic::SemanticOrchestrator>(g_executor);
+        // Phase E: construct compiler pipeline collaborators
+        auto executionInfra   = std::make_shared<NetDiscovery::ExecutionInfrastructure>(g_executor);
+        auto planExecutor     = std::make_shared<NetDiscovery::Plan::ExecutionPlanExecutor>(executionInfra);
+        auto intentCompiler   = std::make_shared<NetDiscovery::compiler::DefaultIntentCompiler>();
+        auto planBuilder      = std::make_shared<NetDiscovery::compiler::DefaultPlanBuilder>();
+        auto planOptimizer    = std::make_shared<NetDiscovery::compiler::PassThroughPlanOptimizer>();
+
+        g_orchestrator = std::make_shared<semantic::SemanticOrchestrator>(
+            planExecutor,
+            g_controllerRegistry,
+            executionInfra,
+            intentCompiler,
+            planBuilder,
+            planOptimizer
+        );
 
         g_ssdpClient = std::make_shared<SSDPClient>();
         if (g_ssdpClient->Initialize() != ESP_OK) {

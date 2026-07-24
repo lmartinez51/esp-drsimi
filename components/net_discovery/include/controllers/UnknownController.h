@@ -68,13 +68,6 @@ public:
                     }
                 }
             }
-        } else if (action.id == ActionId::CheckReachable) {
-            ExecutionRoute route;
-            route.transport = TransportFamily::Unknown;
-            if (!device.endpoints.empty()) {
-                route.preferredEndpoint = &device.endpoints[0];
-            }
-            return route;
         }
         
         return std::nullopt;

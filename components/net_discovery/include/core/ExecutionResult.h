@@ -53,6 +53,10 @@ struct ExecutionResult {
     
     // Parser layer diagnostics
     netdiscovery::parsing::ParserDiagnostics parserDiagnostics;
+
+    bool operator==(const ExecutionResult& o) const {
+        return status == o.status && errorMessage == o.errorMessage;
+    }
 };
 
 } // namespace NetDiscovery

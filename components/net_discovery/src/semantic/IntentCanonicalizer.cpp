@@ -82,11 +82,7 @@ NetDiscovery::ActionId IntentCanonicalizer::Normalize(const std::string& rawInte
 
         {"send_key",           NetDiscovery::ActionId::SendKey},
         {"press_button",       NetDiscovery::ActionId::SendKey},
-        {"key_press",          NetDiscovery::ActionId::SendKey},
-
-        // System Diagnostics
-        {"check_reachable",    NetDiscovery::ActionId::CheckReachable},
-        {"ping",               NetDiscovery::ActionId::CheckReachable}
+        {"key_press",          NetDiscovery::ActionId::SendKey}
     };
 
     auto it = s_aliasMap.find(lowerIntent);

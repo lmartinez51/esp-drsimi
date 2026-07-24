@@ -142,12 +142,6 @@ public:
                     }
                 }
             }
-        } else if (action.id == ActionId::CheckReachable) {
-            route.transport = TransportFamily::Unknown;
-            if (!device.endpoints.empty()) {
-                route.preferredEndpoint = &device.endpoints[0];
-            }
-            return route;
         }
 
         // Default SOAP Support

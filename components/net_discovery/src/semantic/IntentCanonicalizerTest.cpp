@@ -68,10 +68,6 @@ bool RunIntentCanonicalizerTests() {
         {"send_key",           NetDiscovery::ActionId::SendKey},
         {"press_button",       NetDiscovery::ActionId::SendKey},
 
-        // System Diagnostics
-        {"check_reachable",    NetDiscovery::ActionId::CheckReachable},
-        {"ping",               NetDiscovery::ActionId::CheckReachable},
-
         // Negative Test Cases
         {"unknown_command_xyz",NetDiscovery::ActionId::Unknown},
         {"invalid_action",     NetDiscovery::ActionId::Unknown}

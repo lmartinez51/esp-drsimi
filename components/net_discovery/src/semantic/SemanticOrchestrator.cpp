@@ -1,139 +1,245 @@
+/**
+ * @file SemanticOrchestrator.cpp
+ * @brief Pure coordinator implementation for Phase E Intent Compiler pipeline.
+ *
+ * SemanticOrchestrator contains no plan-building, graph-traversal, or step-creation logic.
+ * It sequences calls to IIntentCompiler, DeviceMatcher, ControllerRegistry,
+ * PolicySelector, IPlanBuilder, IPlanOptimizer, and ExecutionPlanExecutor.
+ *
+ * ESP-Claw Platform — Phase E (Intent Compiler & End-to-End Integration)
+ */
+
 #include "semantic/SemanticOrchestrator.h"
+#include "semantic/SemanticDataModels.h"
+#include "semantic/IntentCanonicalizer.h"
+#include "compiler/DefaultIntentCompiler.h"
+#include "compiler/DefaultPlanBuilder.h"
+#include "compiler/PassThroughPlanOptimizer.h"
+#include "compiler/IntentDocument.h"
+#include "compiler/IPlanBuilder.h"
+#include "plan/ExecutionPlanInstance.h"
+#include "plan/CancellationToken.h"
+#include "core/PolicyContext.h"
+#include "core/PolicySelector.h"
+#include "controllers/GenericDLNAController.h"
+#include "controllers/SamsungController.h"
 #include "esp_log.h"
-#include <iostream>
-#include <thread>
+#include "esp_timer.h"
 
 static const char* TAG = "SemanticOrchestrator";
 
+// Static fallback controllers — used when the registry doesn't have a match.
+static NetDiscovery::GenericDLNAController s_fallbackDLNAController;
+static NetDiscovery::SamsungController     s_fallbackSamsungController;
+
 namespace semantic {
 
-SemanticOrchestrator::SemanticOrchestrator(std::shared_ptr<NetDiscovery::ExecutionEngine> executionEngine)
-    : m_executionEngine(std::move(executionEngine))
+// ============================================================================
+// Constructor
+// ============================================================================
+
+SemanticOrchestrator::SemanticOrchestrator(
+    std::shared_ptr<NetDiscovery::Plan::ExecutionPlanExecutor> planExecutor,
+    std::shared_ptr<NetDiscovery::ControllerRegistry>          controllerRegistry,
+    std::shared_ptr<NetDiscovery::ExecutionInfrastructure>     executionInfra,
+    std::shared_ptr<NetDiscovery::compiler::IIntentCompiler>   intentCompiler,
+    std::shared_ptr<NetDiscovery::compiler::IPlanBuilder>      planBuilder,
+    std::shared_ptr<NetDiscovery::compiler::IPlanOptimizer>    planOptimizer)
+    : m_planExecutor(std::move(planExecutor))
+    , m_controllerRegistry(std::move(controllerRegistry))
+    , m_executionInfra(std::move(executionInfra))
+    , m_intentCompiler(intentCompiler
+          ? std::move(intentCompiler)
+          : std::make_shared<NetDiscovery::compiler::DefaultIntentCompiler>())
+    , m_planBuilder(planBuilder
+          ? std::move(planBuilder)
+          : std::make_shared<NetDiscovery::compiler::DefaultPlanBuilder>())
+    , m_planOptimizer(planOptimizer
+          ? std::move(planOptimizer)
+          : std::make_shared<NetDiscovery::compiler::PassThroughPlanOptimizer>())
 {
+    // Instantiate ExecutionPlanExecutor from infrastructure if not provided
+    if (!m_planExecutor && m_executionInfra) {
+        m_planExecutor = std::make_shared<NetDiscovery::Plan::ExecutionPlanExecutor>(
+            m_executionInfra);
+    }
+    if (m_planExecutor) {
+        m_planExecutor->RegisterObserver(
+            std::make_shared<NetDiscovery::Plan::DefaultRuntimeDiagnostics>());
+    }
 }
 
-SemanticError SemanticOrchestrator::Orchestrate(const SemanticRequest& request, 
-                                                const std::vector<NetDiscovery::LogicalDevice>& availableDevices,
-                                                std::shared_ptr<std::atomic<bool>> cancelToken) {
-    // 1. Intent Canonicalization
-    NetDiscovery::ActionId canonicalIntent = m_intentCanonicalizer.Normalize(request.rawIntent);
-    if (canonicalIntent == NetDiscovery::ActionId::Unknown) {
+// ============================================================================
+// Primary pipeline entry point
+// ============================================================================
+
+SemanticError SemanticOrchestrator::OrchestrateDocument(
+    const NetDiscovery::compiler::IntentDocument&    document,
+    const std::vector<NetDiscovery::LogicalDevice>&  availableDevices,
+    std::shared_ptr<std::atomic<bool>>               cancelToken)
+{
+    ESP_LOGI(TAG, "OrchestrateDocument: intentId='%s' name='%s'",
+             document.intentId.c_str(), document.intentName.c_str());
+
+    // ── Step 1: Compile IntentDocument → ASTNode tree ─────────────────────
+    auto astRoot = m_intentCompiler->Compile(document);
+    if (!astRoot) {
+        ESP_LOGE(TAG, "Compile failed: null AST for intent '%s'", document.intentName.c_str());
         return SemanticError::WorkflowGenerationFailed;
     }
 
-    // 2. Device Matching
-    auto candidates = m_deviceMatcher.Match(request.targetDescription, availableDevices);
-    if (candidates.empty()) {
+    // ── Step 2: Device resolution ──────────────────────────────────────────
+    const std::string& deviceRef = document.root.targetDeviceRef;
+    auto matches = m_deviceMatcher.Match(deviceRef, availableDevices);
+    if (matches.empty()) {
+        ESP_LOGE(TAG, "DeviceMatcher: no device found for ref='%s'", deviceRef.c_str());
         return SemanticError::DeviceNotFound;
     }
 
-    // 3. Capability Filtering
-    auto validDevices = m_capabilityFilter.Filter(candidates, canonicalIntent);
-    if (validDevices.empty()) {
-        return SemanticError::MissingCapability;
-    }
-    if (validDevices.size() > 1) {
-        return SemanticError::AmbiguousTarget;
-    }
-
-    NetDiscovery::LogicalDevice targetDevice = validDevices.front();
-
-    // 4. Pre-flight Reachability Check
-    if (m_executionEngine) {
-        NetDiscovery::ExecutionRequest reachReq{targetDevice, {}, {}, {}};
-        reachReq.action.id = NetDiscovery::ActionId::CheckReachable;
-        auto reachRes = m_executionEngine->Execute(reachReq);
-        if (reachRes.status != NetDiscovery::ExecutionStatus::Success) {
-            return SemanticError::DeviceUnreachable;
+    // Resolve pointer into the original availableDevices vector (stable reference)
+    const NetDiscovery::LogicalDevice* targetPtr = nullptr;
+    for (const auto& dev : availableDevices) {
+        if (dev.id == matches.front().id) {
+            targetPtr = &dev;
+            break;
         }
     }
+    if (!targetPtr) {
+        return SemanticError::DeviceNotFound;
+    }
 
-    // 5. Parameter Normalization
-    auto params = m_parameterNormalizer.Normalize(request.rawParameters);
-    
-    // (Optional Entity Resolution - normally we'd replace names with IDs inside params, but we skip for brevity here)
-
-    // 6. Workflow Expansion
-    ExecutionPlan plan = m_workflowPlanner.CreatePlan(canonicalIntent, targetDevice, params);
-    if (plan.steps.empty()) {
+    // ── Step 3: Controller selection ───────────────────────────────────────
+    NetDiscovery::IDeviceController* controller = SelectController(*targetPtr);
+    if (!controller) {
+        ESP_LOGE(TAG, "No controller found for device '%s'", targetPtr->displayName.c_str());
         return SemanticError::WorkflowGenerationFailed;
     }
 
-    ESP_LOGI(TAG, "ActionId       : %s", NetDiscovery::ToString(canonicalIntent).c_str());
-    ESP_LOGI(TAG, "Target Device  : %s", targetDevice.displayName.c_str());
-    ESP_LOGI(TAG, "Execution Parameters:");
-    for (const auto& [k, v] : params) {
-        if (std::holds_alternative<std::string>(v)) {
-            ESP_LOGI(TAG, "  %s = %s", k.c_str(), std::get<std::string>(v).c_str());
-        } else if (std::holds_alternative<int>(v)) {
-            ESP_LOGI(TAG, "  %s = %d", k.c_str(), std::get<int>(v));
-        } else if (std::holds_alternative<double>(v)) {
-            ESP_LOGI(TAG, "  %s = %g", k.c_str(), std::get<double>(v));
-        } else if (std::holds_alternative<bool>(v)) {
-            ESP_LOGI(TAG, "  %s = %s", k.c_str(), std::get<bool>(v) ? "true" : "false");
-        }
+    // ── Step 4: Policy selection ───────────────────────────────────────────
+    NetDiscovery::ActionDescriptor primaryAction;
+    primaryAction.id   = astRoot->resolvedAction;
+    primaryAction.displayName = NetDiscovery::ToString(astRoot->resolvedAction);
+    NetDiscovery::PolicyContext pctx = NetDiscovery::PolicyContext::FromAction(primaryAction);
+    NetDiscovery::ExecutionPolicy policy = NetDiscovery::PolicySelector::SelectPolicy(pctx);
+
+    // ── Step 5: Build IExecutionPlan ───────────────────────────────────────
+    NetDiscovery::compiler::PlanBuildContext buildCtx;
+    buildCtx.resolvedDevice    = targetPtr;
+    buildCtx.selectedController = controller;
+    buildCtx.policy            = policy;
+    buildCtx.planId            = "plan-" + std::to_string(esp_timer_get_time());
+    buildCtx.planName          = document.intentName;
+
+    auto plan = m_planBuilder->Build(*astRoot, buildCtx);
+    if (!plan) {
+        ESP_LOGE(TAG, "PlanBuilder returned null plan");
+        return SemanticError::WorkflowGenerationFailed;
     }
 
-    // 7. Orchestration Loop
-    for (const auto& step : plan.steps) {
-        // Cooperative cancellation check between steps
-        if (cancelToken && cancelToken->load()) {
-            return SemanticError::Cancelled;
-        }
-
-        // Prepare the physical execution request
-        NetDiscovery::ExecutionRequest physRequest{targetDevice, {}, {}, {}};
-        physRequest.action = step.action;
-        // Re-serialize params for ExecutionEngine
-        for (const auto& [k, v] : params) {
-            if (std::holds_alternative<int>(v)) physRequest.parameters[k] = std::to_string(std::get<int>(v));
-            else if (std::holds_alternative<double>(v)) physRequest.parameters[k] = std::to_string(std::get<double>(v));
-            else if (std::holds_alternative<bool>(v)) physRequest.parameters[k] = std::get<bool>(v) ? "true" : "false";
-            else if (std::holds_alternative<std::string>(v)) physRequest.parameters[k] = std::get<std::string>(v);
-        }
-
-        // Wait policy logic BEFORE execution (if we need to wait for a state)
-        if (step.waitPolicy == ExecutionWaitPolicy::WaitUntilReachable) {
-            bool reachable = false;
-            auto start = std::chrono::steady_clock::now();
-            while (std::chrono::steady_clock::now() - start < step.waitTimeout) {
-                if (cancelToken && cancelToken->load()) return SemanticError::Cancelled;
-                
-                bool reachableNow = false;
-                if (m_executionEngine) {
-                    NetDiscovery::ExecutionRequest reachReq{targetDevice, {}, {}, {}};
-                    reachReq.action.id = NetDiscovery::ActionId::CheckReachable;
-                    auto reachRes = m_executionEngine->Execute(reachReq);
-                    if (reachRes.status == NetDiscovery::ExecutionStatus::Success) {
-                        reachableNow = true;
-                    }
-                } else {
-                    reachableNow = true; // Fallback if no engine
-                }
-                
-                if (reachableNow) {
-                    reachable = true;
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            }
-            if (!reachable && !step.isOptional) {
-                return SemanticError::DeviceUnreachable;
-            }
-        } else if (step.waitPolicy == ExecutionWaitPolicy::FixedDelay) {
-            std::this_thread::sleep_for(step.waitTimeout);
-        }
-
-        // Fire ExecutionEngine
-        if (m_executionEngine) {
-            auto result = m_executionEngine->Execute(physRequest);
-            if (result.status != NetDiscovery::ExecutionStatus::Success && !step.isOptional) {
-                return SemanticError::ExecutionFailed;
-            }
-        }
+    // ── Step 6: Optimize ───────────────────────────────────────────────────
+    auto optimized = m_planOptimizer->Optimize(plan);
+    if (!optimized) {
+        optimized = plan; // Fallback: use unoptimized plan
     }
 
+    // ── Step 7: Execute ────────────────────────────────────────────────────
+    auto result = ExecuteCompiledPlan(optimized, cancelToken);
+    if (result.status != NetDiscovery::ExecutionStatus::Success) {
+        ESP_LOGE(TAG, "ExecuteCompiledPlan failed: status=%d",
+                 static_cast<int>(result.status));
+        return SemanticError::ExecutionFailed;
+    }
+
+    ESP_LOGI(TAG, "OrchestrateDocument: SUCCESS intentId='%s'", document.intentId.c_str());
     return SemanticError::None;
+}
+
+// ============================================================================
+// Execute a pre-compiled plan
+// ============================================================================
+
+NetDiscovery::ExecutionResult SemanticOrchestrator::ExecuteCompiledPlan(
+    std::shared_ptr<NetDiscovery::Plan::IExecutionPlan> plan,
+    std::shared_ptr<std::atomic<bool>>                  cancelToken)
+{
+    if (!plan) {
+        NetDiscovery::ExecutionResult r;
+        r.status = NetDiscovery::ExecutionStatus::ExecutionFailed;
+        return r;
+    }
+
+    std::string instanceId = "inst-" + plan->GetPlanId();
+    NetDiscovery::Plan::ExecutionPlanInstance instance(
+        instanceId, plan,
+        NetDiscovery::Plan::CancellationToken(cancelToken));
+
+    if (m_planExecutor) {
+        return m_planExecutor->ExecutePlan(instance);
+    }
+
+    // If no executor, return failure gracefully
+    NetDiscovery::ExecutionResult r;
+    r.status = NetDiscovery::ExecutionStatus::ExecutionFailed;
+    return r;
+}
+
+// ============================================================================
+// Legacy backward-compatibility entry point
+// ============================================================================
+
+SemanticError SemanticOrchestrator::Orchestrate(
+    const SemanticRequest&                           request,
+    const std::vector<NetDiscovery::LogicalDevice>&  availableDevices,
+    std::shared_ptr<std::atomic<bool>>               cancelToken,
+    const NetDiscovery::LogicalDevice*               targetDeviceOpt)
+{
+    // Wrap SemanticRequest into an IntentDocument and delegate to OrchestrateDocument
+    NetDiscovery::compiler::IntentDocument doc;
+    doc.intentId   = "legacy-" + std::to_string(esp_timer_get_time());
+    doc.intentName = request.rawIntent;
+    doc.root.kind          = NetDiscovery::compiler::IntentNodeKind::SingleAction;
+    doc.root.actionName    = request.rawIntent;
+    doc.root.targetDeviceRef = request.targetDescription;
+    doc.root.parameters    = request.rawParameters;
+
+    // Pre-inject targetDeviceOpt into availableDevices via adjusted list if needed
+    if (targetDeviceOpt) {
+        // Build a single-element list to shortcut DeviceMatcher
+        std::vector<NetDiscovery::LogicalDevice> singleDevice = {*targetDeviceOpt};
+        doc.root.targetDeviceRef = targetDeviceOpt->displayName;
+        return OrchestrateDocument(doc, singleDevice, cancelToken);
+    }
+
+    return OrchestrateDocument(doc, availableDevices, cancelToken);
+}
+
+// ============================================================================
+// Controller selection (private)
+// ============================================================================
+
+NetDiscovery::IDeviceController* SemanticOrchestrator::SelectController(
+    const NetDiscovery::LogicalDevice& device) const
+{
+    // 1. Registry lookup via controller candidates
+    if (m_controllerRegistry) {
+        auto& controllers = m_controllerRegistry->GetControllers();
+        for (const auto& candidate : device.controllerCandidates) {
+            if (candidate.isRejected) continue;
+            for (const auto& c : controllers) {
+                if (c->ControllerName() == candidate.name) {
+                    return c.get();
+                }
+            }
+        }
+    }
+
+    // 2. Fallback: manufacturer heuristic
+    std::string mfg = device.manufacturer;
+    for (auto& ch : mfg) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (mfg.find("samsung") != std::string::npos) {
+        return &s_fallbackSamsungController;
+    }
+    return &s_fallbackDLNAController;
 }
 
 } // namespace semantic

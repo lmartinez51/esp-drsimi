@@ -43,33 +43,22 @@ void ActionResolver::Resolve(LogicalDevice& device) {
     };
     
     for (const auto& cap : device.capabilities) {
-        switch (cap) {
-            case Capability::PowerControl:
-                addCapabilityProfile(cap, {ActionId::PowerOn, ActionId::PowerOff});
-                break;
-            case Capability::VolumeControl:
-                addCapabilityProfile(cap, {ActionId::VolumeUp, ActionId::VolumeDown, ActionId::SetVolume, ActionId::GetVolume});
-                break;
-            case Capability::Mute:
-                addCapabilityProfile(cap, {ActionId::Mute, ActionId::Unmute});
-                break;
-            case Capability::MediaPlayback:
-                addCapabilityProfile(cap, {ActionId::Play, ActionId::Pause, ActionId::Stop});
-                break;
-            case Capability::MediaTransport:
-                addCapabilityProfile(cap, {ActionId::Next, ActionId::Previous, ActionId::Seek});
-                break;
-            case Capability::ApplicationLaunching:
-                addCapabilityProfile(cap, {ActionId::LaunchApplication});
-                break;
-            case Capability::InputSelection:
-                addCapabilityProfile(cap, {ActionId::SelectInput});
-                break;
-            case Capability::RemoteControl:
-                addCapabilityProfile(cap, {ActionId::SendKey});
-                break;
-            default:
-                break;
+        if (cap.id == "Power Control" || cap.id == "PowerControl") {
+            addCapabilityProfile(cap, {ActionId::PowerOn, ActionId::PowerOff});
+        } else if (cap.id == "Volume Control" || cap.id == "VolumeControl") {
+            addCapabilityProfile(cap, {ActionId::VolumeUp, ActionId::VolumeDown, ActionId::SetVolume, ActionId::GetVolume});
+        } else if (cap.id == "Mute") {
+            addCapabilityProfile(cap, {ActionId::Mute, ActionId::Unmute});
+        } else if (cap.id == "Media Playback" || cap.id == "MediaPlayback") {
+            addCapabilityProfile(cap, {ActionId::Play, ActionId::Pause, ActionId::Stop});
+        } else if (cap.id == "Media Transport" || cap.id == "MediaTransport") {
+            addCapabilityProfile(cap, {ActionId::Next, ActionId::Previous, ActionId::Seek});
+        } else if (cap.id == "Application Launching" || cap.id == "ApplicationLaunching") {
+            addCapabilityProfile(cap, {ActionId::LaunchApplication});
+        } else if (cap.id == "Input Selection" || cap.id == "InputSelection") {
+            addCapabilityProfile(cap, {ActionId::SelectInput});
+        } else if (cap.id == "Remote Control" || cap.id == "RemoteControl") {
+            addCapabilityProfile(cap, {ActionId::SendKey});
         }
     }
 }

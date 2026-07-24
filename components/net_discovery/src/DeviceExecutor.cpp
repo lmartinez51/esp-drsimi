@@ -1,4 +1,5 @@
 #include "DeviceExecutor.h"
+#include "core/BoundExecutionRequest.h"
 
 namespace NetDiscovery {
 
@@ -9,7 +10,12 @@ DeviceExecutor::DeviceExecutor(const TransportRegistry& transportRegistry,
 }
 
 ExecutionResult DeviceExecutor::Execute(const ExecutionRequest& request) {
-    return engine.Execute(request);
+    BoundExecutionRequest boundReq;
+    boundReq.targetDevice = &request.device;
+    boundReq.action = request.action;
+    boundReq.parameters = request.parameters;
+    boundReq.context = request.context;
+    return engine.Execute(boundReq);
 }
 
 } // namespace NetDiscovery

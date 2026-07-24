@@ -64,13 +64,11 @@ std::vector<NetDiscovery::LogicalDevice> DeviceMatcher::Match(const std::string&
 
         double score = 0.0;
         std::string reason = "No match";
-        bool accepted = false;
 
         // Exact match
         if (lowerTarget == lowerName) {
             score = 1.0;
             reason = "Exact Match (lowerTarget == lowerName)";
-            accepted = true;
             ESP_LOGI(TAG, "  Score Increment: +1.00 [Exact Name Match]");
             ESP_LOGI(TAG, "  TOTAL SCORE    : %.2f", score);
             ESP_LOGI(TAG, "  Decision       : ACCEPTED (%s)", reason.c_str());
@@ -108,7 +106,6 @@ std::vector<NetDiscovery::LogicalDevice> DeviceMatcher::Match(const std::string&
             else if (targetContainsName) reason = "lowerTarget contains lowerName";
             else if (targetContainsMfg) reason = "lowerTarget contains lowerManufacturer";
 
-            accepted = true;
             ESP_LOGI(TAG, "  Score Increment: +0.95 [Substring Match]");
             ESP_LOGI(TAG, "  TOTAL SCORE    : %.2f", score);
             ESP_LOGI(TAG, "  Decision       : ACCEPTED (%s)", reason.c_str());
@@ -122,7 +119,6 @@ std::vector<NetDiscovery::LogicalDevice> DeviceMatcher::Match(const std::string&
         if (dist <= 3) {
             score = 0.70 - (dist * 0.10);
             reason = "Fuzzy match distance " + std::to_string(dist);
-            accepted = true;
             ESP_LOGI(TAG, "  Score Increment: +%.2f [Fuzzy Match dist=%d]", score, dist);
             ESP_LOGI(TAG, "  TOTAL SCORE    : %.2f", score);
             ESP_LOGI(TAG, "  Decision       : ACCEPTED (%s)", reason.c_str());
