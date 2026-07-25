@@ -205,8 +205,11 @@ void orchestrator_enter_state(orchestrator_state_t *state,
         radar_hal_disable();
         csi_handler_stop();
         orchestrator_show_phase("net_discovery", "Scanning WiFi", "Learning...", COLOR_CYAN_BGR565);
-        netdiscovery_trigger_initial_scan();
-        orchestrator_start_net_discovery_timeout();
+        if (netdiscovery_trigger_initial_scan()) {
+            orchestrator_start_net_discovery_timeout();
+        } else {
+            ESP_LOGE(TAG, "NetDiscovery scan task creation failed; timeout timer not armed.");
+        }
         break;
 
     case STATE_DISPATCHING_ALERT:

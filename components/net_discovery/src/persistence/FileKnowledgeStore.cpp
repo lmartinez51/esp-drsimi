@@ -3,6 +3,8 @@
 #include <sstream>
 #include <iostream>
 #include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "NetDiscoveryIPC.h"
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <dirent.h>
@@ -22,34 +24,32 @@ void FileKnowledgeStore::Initialize() {
     EnsureDirectoryExists(m_baseDir);
 }
 
-void FileKnowledgeStore::SaveEntityData(const std::string& networkId, 
-                                        const std::string& entityId, 
+void FileKnowledgeStore::SaveEntityData(const std::string& networkId,
+                                        const std::string& entityId,
                                         const std::string& serializedData) {
-    const std::string netDir = GetNetworkDir(networkId);
-    if (!EnsureDirectoryExists(netDir)) {
-        ESP_LOGE(TAG, "[FileKnowledgeStore] Failed to create network directory: %s", netDir.c_str());
+    const size_t len = serializedData.length();
+    if (len == 0) {
         return;
     }
 
+    // Fix 3: this may run on a PSRAM-backed stack (nd_oneshot), so no direct flash
+    // I/O is allowed here. Serialize into an owned heap buffer and hand it to the
+    // nd_store_writer task, which also creates missing parent directories from its
+    // internal-RAM stack before opening the file.
     const std::string filePath = GetEntityFilePath(networkId, entityId);
-    FILE* f = fopen(filePath.c_str(), "wb");
-    if (f) {
-        size_t len = serializedData.length();
-        if (len > 0) {
-            // Explicitly malloc to bypass std::string SSO (Small String Optimization) 
-            // which could place the string data on the PSRAM-backed stack.
-            char* safe_buf = (char*)malloc(len);
-            if (safe_buf) {
-                memcpy(safe_buf, serializedData.data(), len);
-                fwrite(safe_buf, 1, len, f);
-                free(safe_buf);
-            } else {
-                ESP_LOGE(TAG, "[FileKnowledgeStore] Malloc failed for write buffer");
-            }
-        }
-        fclose(f);
-    } else {
-        ESP_LOGE(TAG, "[FileKnowledgeStore] Failed to open file for writing: %s", filePath.c_str());
+    char* json_buf = (char*)heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!json_buf) {
+        json_buf = (char*)malloc(len); // Fallback to internal heap
+    }
+    if (!json_buf) {
+        ESP_LOGE(TAG, "[FileKnowledgeStore] Malloc failed for write buffer");
+        return;
+    }
+    memcpy(json_buf, serializedData.data(), len);
+
+    if (!netdiscovery_submit_store_write(filePath.c_str(), json_buf, len)) {
+        ESP_LOGE(TAG, "[FileKnowledgeStore] Async write submit failed for %s", filePath.c_str());
+        free(json_buf); // Ownership was not transferred
     }
 }
 

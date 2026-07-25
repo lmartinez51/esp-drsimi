@@ -9,6 +9,7 @@ extern "C" {
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #define NETDISCOVERY_IPC_VERSION 1
 
@@ -61,8 +62,19 @@ bool netdiscovery_validate_intent(const netdiscovery_intent_t* msg);
 // Initializes the NetDiscovery IPC queues and listener tasks
 void netdiscovery_ipc_init(void);
 
-// Triggers the initial one-shot SSDP discovery
-void netdiscovery_trigger_initial_scan(void);
+// Creates the statically-allocated nd_store_writer task and its job queue.
+// Idempotent; invoked automatically by netdiscovery_ipc_init().
+void netdiscovery_init_writer_task(void);
+
+// Enqueues an asynchronous LittleFS write. On success (true) the writer task
+// takes ownership of json_buf and frees it after writing; on failure (false)
+// ownership stays with the caller.
+bool netdiscovery_submit_store_write(const char* path, char* json_buf, size_t len);
+
+// Triggers the initial one-shot SSDP discovery.
+// Returns true if the scan task was created; false on allocation failure
+// (caller must NOT arm the scan timeout timer in that case).
+bool netdiscovery_trigger_initial_scan(void);
 
 // Strategic hook reserved for future cancellation by request_id
 bool netdiscovery_cancel_request(uint32_t request_id);

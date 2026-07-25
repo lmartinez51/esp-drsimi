@@ -35,6 +35,9 @@
 #include "esp_timer.h"
 #include "cJSON.h"
 #include <string.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <errno.h>
 #include "../../../solutions/openai_demo/main/core/app_events.h"
 
 static const char* TAG = "NetDiscoveryIPC";
@@ -282,10 +285,106 @@ static void netdiscovery_ipc_listener_task(void* arg) {
         }
     }
 }
+// ============================================================================
+// Static LittleFS store-writer task (Fix 2)
+// SPI flash writes disable the cache, so file I/O must execute from a task
+// whose stack lives in internal RAM. All persistence jobs are funneled through
+// this statically-allocated task; producers hand over an owned heap buffer.
+// ============================================================================
+
+struct nd_write_job_t {
+    char path[128];
+    char* json_buf; // Buffer allocated by caller (e.g. PSRAM or Heap); freed by writer task
+    size_t len;
+};
+
+static QueueHandle_t nd_write_queue = nullptr;
+static StaticQueue_t nd_write_queue_struct;
+static uint8_t nd_write_queue_storage[8 * sizeof(nd_write_job_t)];
+
+// ESP-IDF FreeRTOS: StackType_t is uint8_t and stack depth is given in bytes
+static StaticTask_t nd_store_writer_tcb;
+static StackType_t nd_store_writer_stack[3072];
+
+// Creates every missing parent directory of file_path. Runs exclusively in the
+// writer-task context so stat/mkdir (flash I/O) execute from an internal-RAM stack.
+static void nd_ensure_parent_dirs(const char* file_path) {
+    char dir[sizeof(((nd_write_job_t*)0)->path)];
+    strlcpy(dir, file_path, sizeof(dir));
+    for (char* p = dir + 1; *p; ++p) {
+        if (*p == '/') {
+            *p = '\0';
+            struct stat st;
+            if (stat(dir, &st) != 0) {
+                if (mkdir(dir, 0777) != 0 && errno != EEXIST) {
+                    ESP_LOGE(TAG, "[StoreWriter] mkdir failed for %s (errno %d)", dir, errno);
+                }
+            }
+            *p = '/';
+        }
+    }
+}
+
+static void nd_store_writer_task(void* arg) {
+    nd_write_job_t job;
+    for (;;) {
+        if (xQueueReceive(nd_write_queue, &job, portMAX_DELAY) == pdTRUE) {
+            nd_ensure_parent_dirs(job.path);
+            FILE* f = fopen(job.path, "wb");
+            if (f) {
+                size_t written = fwrite(job.json_buf, 1, job.len, f);
+                fclose(f);
+                if (written != job.len) {
+                    ESP_LOGE(TAG, "[StoreWriter] Short write on %s (%u/%u bytes)",
+                             job.path, (unsigned)written, (unsigned)job.len);
+                }
+            } else {
+                ESP_LOGE(TAG, "[StoreWriter] fopen failed for %s", job.path);
+            }
+            free(job.json_buf);
+        }
+    }
+}
+
+extern "C" void netdiscovery_init_writer_task(void) {
+    if (nd_write_queue) {
+        return; // Already initialized
+    }
+    nd_write_queue = xQueueCreateStatic(8, sizeof(nd_write_job_t),
+                                        nd_write_queue_storage, &nd_write_queue_struct);
+    TaskHandle_t handle = xTaskCreateStaticPinnedToCore(
+        nd_store_writer_task, "nd_store_writer", sizeof(nd_store_writer_stack),
+        nullptr, 3, nd_store_writer_stack, &nd_store_writer_tcb, 0);
+    if (!handle) {
+        ESP_LOGE(TAG, "Failed to create nd_store_writer task");
+    }
+}
+
+extern "C" bool netdiscovery_submit_store_write(const char* path, char* json_buf, size_t len) {
+    if (!nd_write_queue || !path || !json_buf) {
+        return false;
+    }
+    nd_write_job_t job = {};
+    if (strlcpy(job.path, path, sizeof(job.path)) >= sizeof(job.path)) {
+        ESP_LOGE(TAG, "[StoreWriter] Path too long: %s", path);
+        return false;
+    }
+    job.json_buf = json_buf;
+    job.len = len;
+    if (xQueueSend(nd_write_queue, &job, 0) != pdTRUE) {
+        ESP_LOGE(TAG, "[StoreWriter] Write queue full, dropping job for %s", path);
+        return false; // Ownership stays with caller, who must free the buffer
+    }
+    return true; // Writer task now owns json_buf
+}
+
 static StaticQueue_t* s_intent_queue_struct = nullptr;
 static uint8_t* s_intent_queue_storage = nullptr;
 
 extern "C" void netdiscovery_ipc_init(void) {
+    // Fix 2: bring up the static LittleFS store-writer before any IPC consumers
+    netdiscovery_init_writer_task();
+
     if (!netdiscovery_intent_queue) {
         // 1. Relocate IPC Queue to PSRAM
         s_intent_queue_struct = (StaticQueue_t*)heap_caps_malloc(sizeof(StaticQueue_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -305,17 +404,14 @@ extern "C" void netdiscovery_ipc_init(void) {
     }
 }
 
-extern "C" void netdiscovery_trigger_initial_scan(void) {
+extern "C" bool netdiscovery_trigger_initial_scan(void) {
     ESP_LOGI(TAG, "Triggering one-shot NetDiscovery scan...");
-    auto scan_lambda = []() {
+
+    // Fix 4: LittleFS *reads* (stat/opendir/fread) disable the flash cache just like
+    // writes, so knowledge-store hydration must not run on the PSRAM-backed scan task.
+    // It executes here, on the caller's internal-RAM stack, before the task is spawned.
+    {
         using namespace NetDiscovery;
-        
-        g_transportRegistry = std::make_shared<TransportRegistry>();
-        g_transportRegistry->RegisterTransport(std::make_shared<DummyTransport>());
-        g_transportRegistry->RegisterTransport(std::make_shared<DIALTransport>());
-        g_transportRegistry->RegisterTransport(std::make_shared<SOAPTransport>());
-        g_transportRegistry->RegisterTransport(std::make_shared<WebSocketTransport>());
-        g_transportRegistry->RegisterTransport(std::make_shared<WakeOnLANTransport>());
 
         auto fileStore = std::make_unique<FileKnowledgeStore>("/littlefs/knowledge");
         g_knowledgeStore = std::make_shared<KnowledgeStore>(std::move(fileStore));
@@ -329,6 +425,17 @@ extern "C" void netdiscovery_trigger_initial_scan(void) {
             networkFingerprint.evidence.ssid = "LocalNetwork";
         }
         g_knowledgeStore->ResolveKnownNetwork(networkFingerprint);
+    }
+
+    auto scan_lambda = []() {
+        using namespace NetDiscovery;
+
+        g_transportRegistry = std::make_shared<TransportRegistry>();
+        g_transportRegistry->RegisterTransport(std::make_shared<DummyTransport>());
+        g_transportRegistry->RegisterTransport(std::make_shared<DIALTransport>());
+        g_transportRegistry->RegisterTransport(std::make_shared<SOAPTransport>());
+        g_transportRegistry->RegisterTransport(std::make_shared<WebSocketTransport>());
+        g_transportRegistry->RegisterTransport(std::make_shared<WakeOnLANTransport>());
 
         g_authManager = std::make_shared<AuthenticationManager>(g_knowledgeStore.get());
         g_controllerRegistry = std::make_shared<ControllerRegistry>();
@@ -424,6 +531,11 @@ extern "C" void netdiscovery_trigger_initial_scan(void) {
     };
     
     // Spawn scan in a thread to not block boot sequence (Priority 2 to not starve WebRTC Audio)
-    // NOTE: Must run in Internal SRAM because LittleFS / SPI Flash I/O disables Flash cache.
-    NetDiscovery::ThreadHelper::StartInternalPinnedThread("nd_oneshot", 16384, 2, 0, scan_lambda);
+    // Fix 3: stack lives in PSRAM; LittleFS mutations are delegated to the nd_store_writer
+    // task (internal-RAM stack) so this task never triggers a flash-op cache-disable window.
+    if (!NetDiscovery::ThreadHelper::StartPinnedThread("nd_oneshot", 16384, 2, 0, scan_lambda)) {
+        ESP_LOGE(TAG, "nd_oneshot task creation failed, aborting scan timer");
+        return false;
+    }
+    return true;
 }
