@@ -11,7 +11,6 @@
 
 #include "semantic/SemanticOrchestrator.h"
 #include "semantic/SemanticDataModels.h"
-#include "semantic/IntentCanonicalizer.h"
 #include "compiler/DefaultIntentCompiler.h"
 #include "compiler/DefaultPlanBuilder.h"
 #include "compiler/PassThroughPlanOptimizer.h"
@@ -25,8 +24,11 @@
 #include "controllers/SamsungController.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char* TAG = "SemanticOrchestrator";
+extern "C" void netdiscovery_print_stack_report(const char* label, void* task);
 
 // Static fallback controllers — used when the registry doesn't have a match.
 static NetDiscovery::GenericDLNAController s_fallbackDLNAController;
@@ -163,12 +165,14 @@ NetDiscovery::ExecutionResult SemanticOrchestrator::ExecuteCompiledPlan(
     std::shared_ptr<std::atomic<bool>>                  cancelToken)
 {
     if (!plan) {
+        ESP_LOGE(TAG, "ExecuteCompiledPlan: Plan is null");
         NetDiscovery::ExecutionResult r;
         r.status = NetDiscovery::ExecutionStatus::ExecutionFailed;
         return r;
     }
 
     std::string instanceId = "inst-" + plan->GetPlanId();
+
     NetDiscovery::Plan::ExecutionPlanInstance instance(
         instanceId, plan,
         NetDiscovery::Plan::CancellationToken(cancelToken));
@@ -177,7 +181,7 @@ NetDiscovery::ExecutionResult SemanticOrchestrator::ExecuteCompiledPlan(
         return m_planExecutor->ExecutePlan(instance);
     }
 
-    // If no executor, return failure gracefully
+    ESP_LOGE(TAG, "ExecuteCompiledPlan: m_planExecutor is null");
     NetDiscovery::ExecutionResult r;
     r.status = NetDiscovery::ExecutionStatus::ExecutionFailed;
     return r;
@@ -201,14 +205,6 @@ SemanticError SemanticOrchestrator::Orchestrate(
     doc.root.actionName    = request.rawIntent;
     doc.root.targetDeviceRef = request.targetDescription;
     doc.root.parameters    = request.rawParameters;
-
-    // Pre-inject targetDeviceOpt into availableDevices via adjusted list if needed
-    if (targetDeviceOpt) {
-        // Build a single-element list to shortcut DeviceMatcher
-        std::vector<NetDiscovery::LogicalDevice> singleDevice = {*targetDeviceOpt};
-        doc.root.targetDeviceRef = targetDeviceOpt->displayName;
-        return OrchestrateDocument(doc, singleDevice, cancelToken);
-    }
 
     return OrchestrateDocument(doc, availableDevices, cancelToken);
 }

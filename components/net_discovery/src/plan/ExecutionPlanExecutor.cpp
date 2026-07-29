@@ -7,7 +7,11 @@
 #include "plan/StepRunnerFactory.h"
 #include "plan/binding/DefaultBindingResolver.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <algorithm>
+
+extern "C" void netdiscovery_print_stack_report(const char* label, void* task);
 
 static const char* TAG = "ExecutionPlanExecutor";
 
@@ -48,14 +52,30 @@ void ExecutionPlanExecutor::NotifyObservers(const ExecutionEvent& event) {
 ExecutionResult ExecutionPlanExecutor::ExecutePlan(ExecutionPlanInstance& instance) {
     ExecutionResult finalResult;
 
+    // Imprimimos la dirección física de la instancia y sus miembros
+    ESP_LOGI(TAG, ">>> ExecutePlan: ENTER [this=%p, infra=%p, verifier=%p]", 
+             (void*)this, 
+             (void*)m_infrastructure.get(), 
+             (void*)m_verifier.get());
+
     if (!m_infrastructure) {
+        ESP_LOGE(TAG, "ExecutePlan: Missing ExecutionInfrastructure!");
         finalResult.status = ExecutionStatus::ExecutionFailed;
         finalResult.errorMessage = "Missing ExecutionInfrastructure in ExecutionPlanExecutor.";
         return finalResult;
     }
 
-    // 1. Single-Pass Pre-Flight Plan Verification (Static DAG + Runtime Resources)
+    if (!m_verifier) {
+        ESP_LOGE(TAG, "ExecutePlan: CRITICAL! m_verifier is NULL!");
+        finalResult.status = ExecutionStatus::ExecutionFailed;
+        finalResult.errorMessage = "Missing m_verifier in ExecutionPlanExecutor.";
+        return finalResult;
+    }
+
+    ESP_LOGI(TAG, ">>> ExecutePlan: Calling m_verifier->VerifyPlan...");
     ValidationReport verificationReport = m_verifier->VerifyPlan(instance);
+    ESP_LOGI(TAG, ">>> ExecutePlan: m_verifier->VerifyPlan RETURNED");
+
     if (verificationReport.HasErrors()) {
         ESP_LOGE(TAG, "Pre-flight verification failed:\n%s", verificationReport.ToString().c_str());
 
@@ -82,23 +102,26 @@ ExecutionResult ExecutionPlanExecutor::ExecutePlan(ExecutionPlanInstance& instan
     ExecutionEvent startEvent;
     startEvent.type = ExecutionEventType::PlanStarted;
     startEvent.instanceId = instance.GetInstanceId();
-    startEvent.planId = plan->GetPlanId();
+    startEvent.planId = plan ? plan->GetPlanId() : "";
     startEvent.timestampMs = m_clock->GetCurrentTimeMs();
     startEvent.planState = PlanState::Running;
     startEvent.progress = instance.GetProgress();
     NotifyObservers(startEvent);
+
+    ESP_LOGI(TAG, ">>> ExecutePlan: PlanStarted event notified. Entering execution loop...");
 
     std::vector<std::shared_ptr<IExecutionStep>> executedSteps;
 
     // 2. Execution Loop
     while (true) {
         if (instance.GetCancellationToken().IsCancelled()) {
+            ESP_LOGW(TAG, ">>> ExecutePlan: Execution cancelled by token");
             instance.SetState(PlanState::Cancelled);
 
             ExecutionEvent cancelEvent;
             cancelEvent.type = ExecutionEventType::Cancelled;
             cancelEvent.instanceId = instance.GetInstanceId();
-            cancelEvent.planId = plan->GetPlanId();
+            cancelEvent.planId = plan ? plan->GetPlanId() : "";
             cancelEvent.timestampMs = m_clock->GetCurrentTimeMs();
             cancelEvent.planState = PlanState::Cancelled;
             cancelEvent.progress = instance.GetProgress();
@@ -109,7 +132,10 @@ ExecutionResult ExecutionPlanExecutor::ExecutePlan(ExecutionPlanInstance& instan
             return finalResult;
         }
 
+        ESP_LOGI(TAG, ">>> ExecutePlan: Fetching next runnable nodes...");
         auto runnableNodes = m_scheduler.GetNextRunnableNodes(instance);
+        ESP_LOGI(TAG, ">>> ExecutePlan: Runnable nodes count = %zu", runnableNodes.size());
+
         if (runnableNodes.empty()) {
             break;
         }
@@ -119,12 +145,14 @@ ExecutionResult ExecutionPlanExecutor::ExecutePlan(ExecutionPlanInstance& instan
             if (!step) continue;
 
             std::string stepId = step->GetStepId();
+            ESP_LOGI(TAG, ">>> ExecutePlan: Running stepId='%s' stepName='%s'", stepId.c_str(), step->GetStepName().c_str());
+
             instance.SetStepState(stepId, StepState::Running);
 
             ExecutionEvent stepStart;
             stepStart.type = ExecutionEventType::StepStarted;
             stepStart.instanceId = instance.GetInstanceId();
-            stepStart.planId = plan->GetPlanId();
+            stepStart.planId = plan ? plan->GetPlanId() : "";
             stepStart.stepId = stepId;
             stepStart.stepName = step->GetStepName();
             stepStart.timestampMs = m_clock->GetCurrentTimeMs();
@@ -133,10 +161,16 @@ ExecutionResult ExecutionPlanExecutor::ExecutePlan(ExecutionPlanInstance& instan
             NotifyObservers(stepStart);
 
             // Delegate step execution to polymorphic IStepRunner
+            ESP_LOGI(TAG, ">>> ExecutePlan: Creating StepRunner...");
             auto runner = StepRunnerFactory::CreateRunner(*step);
             auto& stepState = instance.GetStepExecutionState(stepId);
             DefaultBindingResolver bindingResolver;
+
+            ESP_LOGI(TAG, ">>> ExecutePlan: Calling runner->RunStep...");
+            netdiscovery_print_stack_report("Pre-RunStep Crash Check", xTaskGetCurrentTaskHandle());
             ExecutionOutcome outcome = runner->RunStep(*step, stepState, instance.GetContext(), *m_infrastructure, bindingResolver, instance.GetCancellationToken());
+            ESP_LOGI(TAG, ">>> ExecutePlan: runner->RunStep returned status=%d", static_cast<int>(outcome.status.status));
+
             ExecutionResult stepResult = outcome.status;
 
             executedSteps.push_back(step);
@@ -147,7 +181,7 @@ ExecutionResult ExecutionPlanExecutor::ExecutePlan(ExecutionPlanInstance& instan
                 ExecutionEvent stepDone;
                 stepDone.type = ExecutionEventType::StepCompleted;
                 stepDone.instanceId = instance.GetInstanceId();
-                stepDone.planId = plan->GetPlanId();
+                stepDone.planId = plan ? plan->GetPlanId() : "";
                 stepDone.stepId = stepId;
                 stepDone.stepName = step->GetStepName();
                 stepDone.timestampMs = m_clock->GetCurrentTimeMs();
@@ -162,7 +196,7 @@ ExecutionResult ExecutionPlanExecutor::ExecutePlan(ExecutionPlanInstance& instan
                 ExecutionEvent stepFail;
                 stepFail.type = ExecutionEventType::StepFailed;
                 stepFail.instanceId = instance.GetInstanceId();
-                stepFail.planId = plan->GetPlanId();
+                stepFail.planId = plan ? plan->GetPlanId() : "";
                 stepFail.stepId = stepId;
                 stepFail.stepName = step->GetStepName();
                 stepFail.timestampMs = m_clock->GetCurrentTimeMs();
@@ -179,7 +213,7 @@ ExecutionResult ExecutionPlanExecutor::ExecutePlan(ExecutionPlanInstance& instan
                 ExecutionEvent planFail;
                 planFail.type = ExecutionEventType::PlanFailed;
                 planFail.instanceId = instance.GetInstanceId();
-                planFail.planId = plan->GetPlanId();
+                planFail.planId = plan ? plan->GetPlanId() : "";
                 planFail.timestampMs = m_clock->GetCurrentTimeMs();
                 planFail.planState = PlanState::Failed;
                 planFail.errorMessage = stepResult.errorMessage;
@@ -196,12 +230,13 @@ ExecutionResult ExecutionPlanExecutor::ExecutePlan(ExecutionPlanInstance& instan
     ExecutionEvent finishEvent;
     finishEvent.type = ExecutionEventType::PlanFinished;
     finishEvent.instanceId = instance.GetInstanceId();
-    finishEvent.planId = plan->GetPlanId();
+    finishEvent.planId = plan ? plan->GetPlanId() : "";
     finishEvent.timestampMs = m_clock->GetCurrentTimeMs();
     finishEvent.planState = PlanState::Completed;
     finishEvent.progress = instance.GetProgress();
     NotifyObservers(finishEvent);
 
+    ESP_LOGI(TAG, ">>> ExecutePlan: COMPLETED SUCCESSFULLY");
     return finalResult;
 }
 

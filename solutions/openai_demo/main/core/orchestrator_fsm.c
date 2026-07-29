@@ -28,6 +28,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "esp_heap_caps.h"
 
 #include "app_events.h"
 #include "wifi_session_state.h"
@@ -167,6 +168,9 @@ void orchestrator_enter_state(orchestrator_state_t *state,
     case STATE_PREPARING_BLE:
     {
         ESP_LOGI(TAG, "STATE_PREPARING_BLE: pausing CSI and cold-booting BLE for identity validation.");
+        // Take heap snapshot before BLE initialization
+        // ESP_LOGW("HEAP_TRACE", "=== HEAP BEFORE BLE START ===");
+        // heap_caps_print_heap_info(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         orchestrator_cancel_sleep_csi_cooldown();
         radar_hal_disable();
         csi_handler_stop();
@@ -193,6 +197,9 @@ void orchestrator_enter_state(orchestrator_state_t *state,
 
     case STATE_RELEASING_BLE:
         ESP_LOGI(TAG, "STATE_RELEASING_BLE: releasing NimBLE before audio ignition.");
+        // Take heap snapshot before BLE release
+        // ESP_LOGW("HEAP_TRACE", "=== HEAP BEFORE BLE RELEASE ===");
+        // heap_caps_print_heap_info(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         orchestrator_cancel_sleep_csi_cooldown();
         radar_hal_disable();
         csi_handler_stop();

@@ -4,6 +4,9 @@
  */
 
 #include "plan/ExecutionPlanVerifier.h"
+#include "esp_log.h"
+
+static const char* TAG = "ExecutionPlanVerifier";
 
 namespace NetDiscovery {
 namespace Plan {
@@ -11,6 +14,7 @@ namespace Plan {
 ValidationReport ExecutionPlanVerifier::VerifyPlan(const ExecutionPlanInstance& instance) const {
     ValidationReport report;
 
+    ESP_LOGI(TAG, ">>> VerifyPlan: Step 1 Runtime Validation starting...");
     // 1. Runtime instance validation
     ValidationReport runtimeReport = m_runtimeValidator.ValidateInstance(instance);
     for (const auto& issue : runtimeReport.GetIssues()) {
@@ -19,9 +23,11 @@ ValidationReport ExecutionPlanVerifier::VerifyPlan(const ExecutionPlanInstance& 
 
     // Stop early if instance is null/fatal
     if (runtimeReport.HasErrors()) {
+        ESP_LOGE(TAG, ">>> VerifyPlan: Step 1 Runtime Validation HAS ERRORS");
         return report;
     }
 
+    ESP_LOGI(TAG, ">>> VerifyPlan: Step 2 Static Graph Validation starting...");
     // 2. Static graph validation
     auto plan = instance.GetPlan();
     if (plan && plan->GetGraph()) {
@@ -31,6 +37,7 @@ ValidationReport ExecutionPlanVerifier::VerifyPlan(const ExecutionPlanInstance& 
         }
     }
 
+    ESP_LOGI(TAG, ">>> VerifyPlan: COMPLETED successfully");
     return report;
 }
 

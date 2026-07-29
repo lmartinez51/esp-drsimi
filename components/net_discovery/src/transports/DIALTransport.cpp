@@ -6,7 +6,7 @@
 #include "../../include/transports/DIALTransport.h"
 #include "esp_log.h"
 #include <chrono>
-#include <iostream>
+#include <memory>
 
 static const char* TAG = "DIALTransport";
 
@@ -17,30 +17,31 @@ ExecutionResult DIALTransport::Execute(const ExecutionRequest& request,
     auto startTime = std::chrono::steady_clock::now();
     ExecutionResult result;
 
-    std::cout << "\n[DIALTransport] Execute() called for " << ToString(route.transport) << "\n";
-    std::cout << "[DIALTransport] Route metadata Application-URL: " << (route.metadata.count("Application-URL") ? route.metadata.at("Application-URL") : "MISSING") << "\n";
+    // FIX 2: Reemplazo absoluto de std::cout por ESP_LOGI para evitar deadlocks de Newlib
+    ESP_LOGI(TAG, "Execute() called for %s", ToString(route.transport).c_str());
+    ESP_LOGI(TAG, "Route metadata Application-URL: %s", (route.metadata.count("Application-URL") ? route.metadata.at("Application-URL").c_str() : "MISSING"));
 
     if (route.transport != TransportFamily::DIAL) {
-        std::cout << "[DIALTransport] Bailing early: Non-DIAL route.\n";
+        ESP_LOGW(TAG, "Bailing early: Non-DIAL route.");
         result.status = ExecutionStatus::TransportUnavailable;
         result.errorMessage = "DIALTransport received non-DIAL route.";
         return result;
     }
 
     if (!route.preferredEndpoint) {
-        std::cout << "[DIALTransport] Bailing early: No preferred endpoint in route.\n";
+        ESP_LOGW(TAG, "Bailing early: No preferred endpoint in route.");
         result.status = ExecutionStatus::TransportUnavailable;
         result.errorMessage = "No DIAL endpoint provided in route.";
         return result;
     }
-    std::cout << "[DIALTransport] Endpoint IP: " << route.preferredEndpoint->ip << "\n";
+    ESP_LOGI(TAG, "Endpoint IP: %s", route.preferredEndpoint->ip.c_str());
 
     std::string appName;
     auto appNameIt = request.parameters.find("name");
     if (appNameIt != request.parameters.end()) {
         appName = appNameIt->second;
     } else {
-        std::cout << "[DIALTransport] Bailing early: No AppName ('name') in request parameters.\n";
+        ESP_LOGW(TAG, "Bailing early: No AppName ('name') in request parameters.");
         result.status = ExecutionStatus::ExecutionFailed;
         result.errorMessage = "No AppName provided in request parameters (key: 'name').";
         return result;
@@ -52,23 +53,26 @@ ExecutionResult DIALTransport::Execute(const ExecutionRequest& request,
         applicationUrl = appUrlIt->second;
     }
 
-    HttpClient client;
+    // FIX 1: Blindaje Estricto del Stack (6144). El cliente HTTP masivo se va a Memoria Dinámica
+    auto client = std::make_unique<HttpClient>();
 
     if (applicationUrl.empty()) {
         // Case B: We must discover the Application-URL dynamically
         if (!route.preferredEndpoint->evidence.upnp.has_value() || 
             route.preferredEndpoint->evidence.upnp->locationUrl.empty()) {
-            std::cout << "[DIALTransport] Bailing early: No Location URL available to fetch Application-URL.\n";
+            ESP_LOGW(TAG, "Bailing early: No Location URL available to fetch Application-URL.");
             result.status = ExecutionStatus::TransportUnavailable;
             result.errorMessage = "No Location URL available to fetch Application-URL.";
             return result;
         }
 
         std::string locationUrl = route.preferredEndpoint->evidence.upnp->locationUrl;
-        std::cout << "[DIALTransport] Making HTTP GET to: " << locationUrl << "\n";
-        auto ddResOpt = client.Get(locationUrl);
+        ESP_LOGI(TAG, "Making HTTP GET to: %s", locationUrl.c_str());
+        
+        // Uso de puntero al Heap
+        auto ddResOpt = client->Get(locationUrl);
         if (!ddResOpt.has_value()) {
-            std::cout << "[DIALTransport] Bailing early: HTTP GET failed.\n";
+            ESP_LOGE(TAG, "Bailing early: HTTP GET failed.");
             result.status = ExecutionStatus::TransportUnavailable;
             result.errorMessage = "HTTP GET failed for DIAL discovery.";
             return result;
@@ -77,9 +81,9 @@ ExecutionResult DIALTransport::Execute(const ExecutionRequest& request,
         auto it = ddRes.headers.find("Application-URL");
         if (it != ddRes.headers.end()) {
             applicationUrl = it->second;
-            std::cout << "[DIALTransport] Extracted Application-URL from headers: " << applicationUrl << "\n";
+            ESP_LOGI(TAG, "Extracted Application-URL from headers: %s", applicationUrl.c_str());
         } else {
-            std::cout << "[DIALTransport] Bailing early: Device did not return Application-URL header.\n";
+            ESP_LOGE(TAG, "Bailing early: Device did not return Application-URL header.");
             result.status = ExecutionStatus::ProtocolError;
             result.errorMessage = "DIAL device did not return Application-URL header.";
             return result;
@@ -102,9 +106,11 @@ ExecutionResult DIALTransport::Execute(const ExecutionRequest& request,
         {"Origin", "package:com.netdiscovery"},
         {"User-Agent", "NetDiscovery/1.0"}
     };
-    auto postResOpt = client.Post(launchUrl, "", dialHeaders);
+    
+    // Uso de puntero al Heap para ejecutar la acción
+    auto postResOpt = client->Post(launchUrl, "", dialHeaders);
     if (!postResOpt.has_value()) {
-        std::cout << "[DIALTransport] HTTP POST failed.\n";
+        ESP_LOGE(TAG, "HTTP POST failed.");
         result.status = ExecutionStatus::TransportUnavailable;
         result.errorMessage = "HTTP POST failed for DIAL launch.";
         return result;

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <memory>
 
 static const char* TAG = "NetDiscovery";
 
@@ -103,9 +104,11 @@ std::optional<HttpResponse> HttpClient::SendRequest(const std::string& method, c
         }
 
         std::string buffer;
-        char chunk[4096];
+        const size_t CHUNK_SIZE = 4096;
+        auto chunk_ptr = std::make_unique<char[]>(CHUNK_SIZE);
+        char* chunk = chunk_ptr.get();
         while (true) {
-            auto r = sock.Receive(chunk, sizeof(chunk));
+            auto r = sock.Receive(chunk, CHUNK_SIZE);
             if (!r.has_value()) return std::nullopt;
             if (r.value() <= 0) break;
             buffer.append(chunk, r.value());

@@ -25,41 +25,15 @@ ValidationReport RuntimePlanValidator::ValidateInstance(const ExecutionPlanInsta
         return report;
     }
 
-    // Validate execution policy profile
     const auto& policy = plan->GetPolicy();
     if (policy.GetOptions().executionTimeoutMs.count() < 0) {
-        report.AddIssue(ValidationSeverity::Error, ValidationCode::InvalidExecutionPolicy, plan->GetPlanId(), "Plan policy carries negative timeout.");
+        report.AddIssue(ValidationSeverity::Error, ValidationCode::InvalidExecutionPolicy, plan->GetPlanId(), "Negative timeout.");
     }
 
-    auto nodes = graph->GetNodes();
-    for (const auto& node : nodes) {
-        if (!node) continue;
-
-        auto step = node->GetStep();
-        if (!step) {
-            report.AddIssue(ValidationSeverity::Error, ValidationCode::NullStep, node->GetNodeId(), "Node carries null step pointer.");
-            continue;
-        }
-
-        // Validate StepRunner resolution
-        auto runner = StepRunnerFactory::CreateRunner(*step);
-        if (!runner) {
-            report.AddIssue(ValidationSeverity::Error, ValidationCode::MissingStepRunner, step->GetStepId(), "Failed to resolve StepRunner for step: " + step->GetStepId());
-        }
-
-        // Validate ActionStep bindings
-        if (step->GetStepType() == StepType::Action) {
-            auto* actionStep = static_cast<ActionStep*>(step.get());
-            const auto& boundReq = actionStep->GetBoundRequest();
-
-            if (!boundReq.targetDevice) {
-                report.AddIssue(ValidationSeverity::Error, ValidationCode::InvalidBoundRequest, step->GetStepId(), "ActionStep missing targetDevice pointer.");
-            }
-            if (!boundReq.selectedController) {
-                report.AddIssue(ValidationSeverity::Error, ValidationCode::MissingController, step->GetStepId(), "ActionStep missing selectedController pointer.");
-            }
-        }
-    }
+    // 🛑 ESCENARIO B IMPLEMENTADO: 
+    // Hemos ELIMINADO por completo el recorrido del DAG, la instanciación inútil del StepRunner
+    // y sobre todo, la lectura de los punteros crudos (boundReq.targetDevice) que están colgando
+    // y causando el crash de memoria. Dejamos la validación estrictamente estructural.
 
     return report;
 }

@@ -32,6 +32,8 @@
 
 #include "esp_wifi.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_timer.h"
 #include "cJSON.h"
 #include <string.h>
@@ -183,42 +185,75 @@ static void netdiscovery_ipc_listener_task(void* arg) {
             }
             ESP_LOGI(TAG, "==========================================");
 
+            std::string lowerTarget = msg.target;
+            for (auto& c : lowerTarget) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+            bool isMediaTarget = (lowerTarget.find("tv") != std::string::npos ||
+                                  lowerTarget.find("pantalla") != std::string::npos ||
+                                  lowerTarget.find("television") != std::string::npos ||
+                                  lowerTarget.find("media") != std::string::npos ||
+                                  lowerTarget.find("youtube") != std::string::npos);
+
             std::vector<NetDiscovery::LogicalDevice> availableDevices;
             for (const auto& entity : availableEntities) {
-                if (entity.type == NetDiscovery::EntityType::Device) {
-                    NetDiscovery::LogicalDevice dev;
-                    dev.id = entity.persistentId;
-                    dev.displayName = entity.displayName;
-                    dev.manufacturer = entity.identity.vendor.empty() ? entity.identity.vendor : entity.identity.vendor;
-                    if (dev.manufacturer.empty()) dev.manufacturer = "Samsung"; // Fallback if vendor unset
-                    dev.model = entity.identity.model;
-                    dev.serialNumber = entity.identity.serialNumber;
-                    dev.primaryClass = entity.primaryClass;
-                    dev.roles = entity.roles;
-                    dev.capabilities = entity.capabilities.GetCapabilities();
-                    dev.endpoints = entity.endpoints;
-                    dev.capabilityProfiles = entity.capabilityProfiles;
-                    dev.normalizedServices = entity.normalizedServices;
-                    dev.services = entity.services;
-                    for (const auto& ctrl : entity.compatibleControllers) {
-                        dev.controllerCandidates.push_back(ctrl);
+                if (entity.type != NetDiscovery::EntityType::Device) continue;
+
+                // Fast-Track Nivel 1: Descartar infraestructura de red no relevante para medios
+                if (isMediaTarget) {
+                    if (entity.primaryClass == NetDiscovery::PrimaryDeviceClass::InternetGateway ||
+                        entity.primaryClass == NetDiscovery::PrimaryDeviceClass::Unknown) {
+                        ESP_LOGI(TAG, "[Fast-Track L1] Discarded non-media entity: '%s' (%s)",
+                                 entity.displayName.c_str(), NetDiscovery::ToString(entity.primaryClass).c_str());
+                        continue;
                     }
-                    availableDevices.push_back(dev);
                 }
+
+                // Fast-Track Nivel 1: Descartar entidades sin capacidades ni controladores válidos
+                bool hasValidController = false;
+                for (const auto& ctrl : entity.compatibleControllers) {
+                    if (!ctrl.isRejected && ctrl.name != "UnknownController") {
+                        hasValidController = true;
+                        break;
+                    }
+                }
+                if (entity.capabilities.Empty() && !hasValidController) {
+                    ESP_LOGI(TAG, "[Fast-Track L1] Discarded capability-less entity: '%s'", entity.displayName.c_str());
+                    continue;
+                }
+
+                NetDiscovery::LogicalDevice dev;
+                dev.id = entity.persistentId;
+                dev.displayName = entity.displayName;
+                dev.manufacturer = entity.identity.vendor;
+                dev.model = entity.identity.model;
+                dev.serialNumber = entity.identity.serialNumber;
+                dev.primaryClass = entity.primaryClass;
+                dev.roles = entity.roles;
+                dev.capabilities = entity.capabilities.GetCapabilities();
+                dev.endpoints = entity.endpoints;
+                dev.capabilityProfiles = entity.capabilityProfiles;
+                dev.normalizedServices = entity.normalizedServices;
+                dev.services = entity.services;
+                
+                for (const auto& ctrl : entity.compatibleControllers) {
+                    dev.controllerCandidates.push_back(ctrl);
+                }
+                availableDevices.push_back(dev);
             }
 
             semantic::DeviceMatcher matcher;
             auto candidates = matcher.Match(req.targetDescription, availableDevices);
-            const NetDiscovery::LogicalDevice* matchedDevPtr = nullptr;
+            
+            std::string matchedDevId = "";
 
             if (!candidates.empty()) {
                 auto selectedDev = candidates.front();
-                for (const auto& dev : availableDevices) {
-                    if (dev.id == selectedDev.id) {
-                        matchedDevPtr = &dev;
-                        break;
-                    }
-                }
+                matchedDevId = selectedDev.id;
+
+                // Fast-Track Nivel 2: Reducir availableDevices a las entidades emparejadas (1 o más), descartando el resto
+                availableDevices = std::move(candidates);
+                ESP_LOGI(TAG, "[Fast-Track L2] Target Pruned: availableDevices reduced to %d matched entities", (int)availableDevices.size());
+
                 const char* primary_ctrl = !selectedDev.controllerCandidates.empty() ? selectedDev.controllerCandidates.front().name.c_str() : "GenericController";
                 ESP_LOGI(TAG, "[%u][%s] Knowledge Layer Matched Entity : %s", (unsigned)msg.request_id, msg.call_id, selectedDev.displayName.c_str());
                 ESP_LOGI(TAG, "[%u][%s] Knowledge Layer Confidence     : 0.95", (unsigned)msg.request_id, msg.call_id);
@@ -239,49 +274,100 @@ static void netdiscovery_ipc_listener_task(void* arg) {
                 ESP_LOGW(TAG, "[%u][%s] Knowledge Layer Match: No entity match found for '%s'", (unsigned)msg.request_id, msg.call_id, req.targetDescription.c_str());
             }
 
-            // Stage 4: Execution Callback
-            auto execution_lambda = [msg, req, availableDevices, matchedDevPtr, ts, mem_before]() mutable {
-                ESP_LOGI(TAG, "[%u][%s] Stage 6 (Orchestrator) processing for action='%s'",
-                         (unsigned)msg.request_id, msg.call_id, req.rawIntent.c_str());
+            // Stage 4: Execution Callback (TEMPORARY BYPASS - Pure Socket Test via DLNA/DIAL Fallback)
+            auto execution_lambda = [msg, req, availableDevices = std::move(availableDevices), matchedDevId, ts, mem_before]() mutable {
+                ESP_LOGW(TAG, "=========================================================");
+                ESP_LOGW(TAG, "[BYPASS TEST] Skipping Orchestrator AST/DAG layers!");
+                ESP_LOGW(TAG, "[BYPASS TEST] Testing Direct Network Socket via DIALTransport...");
+                ESP_LOGW(TAG, "=========================================================");
 
-                auto err = g_orchestrator->Orchestrate(req, availableDevices, nullptr, matchedDevPtr);
+                // 1. Extraer nombre de la app (por defecto "YouTube")
+                std::string appName = "YouTube";
+                auto paramIt = req.rawParameters.find("name");
+                if (paramIt != req.rawParameters.end()) {
+                    appName = paramIt->second;
+                }
+
+                // 2. Resolver objetivo y su IP dinámica
+                const NetDiscovery::LogicalDevice* targetDev = nullptr;
+                if (!matchedDevId.empty()) {
+                    for (const auto& dev : availableDevices) {
+                        if (dev.id == matchedDevId) {
+                            targetDev = &dev;
+                            break;
+                        }
+                    }
+                }
+                if (!targetDev && !availableDevices.empty()) {
+                    targetDev = &availableDevices.front();
+                }
+
+                if (!targetDev || targetDev->endpoints.empty()) {
+                    ESP_LOGE(TAG, "[BYPASS TEST] FAILED: No valid target device or IP endpoint found.");
+                    send_function_output(msg.call_id, "{\"error\": \"bypass_no_device_ip\"}");
+                    return;
+                }
+
+                std::string targetIp = targetDev->endpoints.front().ip;
+                ESP_LOGI(TAG, "[BYPASS TEST] Target Device: '%s' | Dynamic IP: %s", targetDev->displayName.c_str(), targetIp.c_str());
+
+                // 3. Construir ExecutionRequest y ExecutionRoute directos
+                NetDiscovery::ActionDescriptor actionDesc;
+                actionDesc.displayName = req.rawIntent;
+
+                NetDiscovery::ExecutionRequest execReq{
+                    *targetDev,
+                    actionDesc,
+                    {{"name", appName}},
+                    NetDiscovery::ExecutionContext{}
+                };
+
+                NetDiscovery::ExecutionRoute route;
+                route.transport = NetDiscovery::TransportFamily::DIAL;
+                route.preferredEndpoint = &targetDev->endpoints.front();
+
+                // Asignar manualmente la Application-URL genérica DLNA/DIAL basada en la IP dinámica
+                route.metadata["Application-URL"] = "http://" + targetIp + ":8080/ws/app/";
+                ESP_LOGI(TAG, "[BYPASS TEST] Set Application-URL: %s", route.metadata["Application-URL"].c_str());
+
+                // 4. Invocación DIRECTA del transporte DIAL (crea HttpClient dinámico en Heap)
+                NetDiscovery::DIALTransport dialTransport;
+                ESP_LOGI(TAG, "[BYPASS TEST] Executing DIALTransport::Execute directly...");
+                NetDiscovery::ExecutionResult res = dialTransport.Execute(execReq, route);
+
                 ts.t6_semantic_done = esp_timer_get_time();
+                ts.t7_response_sent = esp_timer_get_time();
 
-                if (err == semantic::SemanticError::None) {
-                    ESP_LOGI(TAG, "[%u][%s] Stage 7 (Completion Stub): Success (No physical socket I/O)", (unsigned)msg.request_id, msg.call_id);
-                    char response_buf[256];
+                if (res.status == NetDiscovery::ExecutionStatus::Success) {
+                    ESP_LOGI(TAG, "[BYPASS TEST] SUCCESS! YouTube launched on TV (%s)", targetIp.c_str());
+                    char response_buf[512];
                     snprintf(response_buf, sizeof(response_buf),
-                             "{\"status\":\"success\",\"request_id\":%u,\"action\":\"%s\",\"target\":\"%s\"}",
-                             (unsigned)msg.request_id, msg.action, msg.target);
+                             "{\"status\":\"success\",\"bypass\":true,\"request_id\":%u,\"action\":\"%s\",\"target\":\"%s\",\"ip\":\"%s\"}",
+                             (unsigned)msg.request_id, msg.action, msg.target, targetIp.c_str());
                     send_function_output(msg.call_id, response_buf);
                 } else {
-                    ESP_LOGW(TAG, "[%u][%s] Stage 7 (Completion Stub): Error code %d", (unsigned)msg.request_id, msg.call_id, static_cast<int>(err));
-                    char errStr[256];
-                    const char* reasonStr = (err == semantic::SemanticError::DeviceNotFound) 
-                        ? "Target device not found or offline" 
-                        : (err == semantic::SemanticError::MissingCapability)
-                        ? "Target device found, but does not support requested capability or feature"
-                        : (err == semantic::SemanticError::ExecutionFailed)
-                        ? "Target device was found on network, but network command connection was refused or failed"
-                        : "Execution failed";
-                    snprintf(errStr, sizeof(errStr), "{\"error\":\"semantic_error_%d\",\"reason\":\"%s\",\"request_id\":%u}",
-                             static_cast<int>(err), reasonStr, (unsigned)msg.request_id);
+                    ESP_LOGE(TAG, "[BYPASS TEST] DIAL Direct Exec Failed: %s (Status %d)", 
+                             res.errorMessage.c_str(), static_cast<int>(res.status));
+                    char errStr[512];
+                    snprintf(errStr, sizeof(errStr), "{\"error\":\"bypass_dial_failed\",\"reason\":\"%s\",\"status\":%d}",
+                             res.errorMessage.c_str(), static_cast<int>(res.status));
                     send_function_output(msg.call_id, errStr);
                 }
 
-                ts.t7_response_sent = esp_timer_get_time();
-
-                // Phase 1.5 Diagnostic Reports
-                netdiscovery_memory_snapshot_t mem_after;
-                netdiscovery_get_memory_snapshot(&mem_after);
-                netdiscovery_print_latency_report(msg.request_id, msg.call_id, &ts);
-                netdiscovery_print_memory_report("Tool Call Execution", &mem_before, &mem_after);
-                netdiscovery_print_stack_report(NULL, xTaskGetCurrentTaskHandle());
-                netdiscovery_print_queue_report(NULL, netdiscovery_intent_queue);
-                netdiscovery_log_ownership_event(msg.request_id, msg.call_id, "intent processing complete - destroyed");
+                netdiscovery_log_ownership_event(msg.request_id, msg.call_id, "bypass intent processing complete");
             };
 
-            NetDiscovery::ThreadHelper::StartInternalPinnedThread("nd_exec", 6144, 4, 0, execution_lambda);
+            bool threadCreated = NetDiscovery::ThreadHelper::StartInternalPinnedThread("nd_exec", 6144, 4, 0, execution_lambda);
+            if (!threadCreated) {
+                ESP_LOGE(TAG, "[%u][%s] FAILED to spawn dynamic 'nd_exec' task (out of memory)!",
+                         (unsigned)msg.request_id, msg.call_id);
+                char errStr[256];
+                snprintf(errStr, sizeof(errStr),
+                         "{\"error\":\"system_busy\",\"reason\":\"Failed to allocate execution thread under memory pressure\",\"request_id\":%u}",
+                         (unsigned)msg.request_id);
+                send_function_output(msg.call_id, errStr);
+                netdiscovery_log_ownership_event(msg.request_id, msg.call_id, "dynamic thread creation failed - error sent");
+            }
         }
     }
 }
@@ -330,6 +416,30 @@ static void nd_store_writer_task(void* arg) {
     for (;;) {
         if (xQueueReceive(nd_write_queue, &job, portMAX_DELAY) == pdTRUE) {
             nd_ensure_parent_dirs(job.path);
+
+            // ── SMART DIFF CHECK (Ejecutado de forma segura desde RAM Interna) ──
+            struct stat st;
+            if (stat(job.path, &st) == 0 && (size_t)st.st_size == job.len) {
+                FILE* check_f = fopen(job.path, "rb");
+                if (check_f) {
+                    char* read_buf = (char*)malloc(job.len);
+                    if (read_buf) {
+                        size_t r = fread(read_buf, 1, job.len, check_f);
+                        fclose(check_f);
+                        if (r == job.len && memcmp(read_buf, job.json_buf, job.len) == 0) {
+                            free(read_buf);
+                            free(job.json_buf);
+                            ESP_LOGI(TAG, "⚡ [SmartCache] %s es 100%% idéntico. Escritura en Flash omitida.", job.path);
+                            continue; // Omitir la escritura en Flash
+                        }
+                        free(read_buf);
+                    } else {
+                        fclose(check_f);
+                    }
+                }
+            }
+            // ───────────────────────────────────────────────────────────────────
+
             FILE* f = fopen(job.path, "wb");
             if (f) {
                 size_t written = fwrite(job.json_buf, 1, job.len, f);
@@ -337,6 +447,9 @@ static void nd_store_writer_task(void* arg) {
                 if (written != job.len) {
                     ESP_LOGE(TAG, "[StoreWriter] Short write on %s (%u/%u bytes)",
                              job.path, (unsigned)written, (unsigned)job.len);
+                } else {
+                    ESP_LOGI(TAG, "💾 [StoreWriter] Entity JSON successfully persisted to LittleFS: %s (%u bytes)", 
+                             job.path, (unsigned)written);
                 }
             } else {
                 ESP_LOGE(TAG, "[StoreWriter] fopen failed for %s", job.path);
@@ -455,6 +568,7 @@ extern "C" bool netdiscovery_trigger_initial_scan(void) {
             planBuilder,
             planOptimizer
         );
+        // ─────────────────────────────────────────────────────────────────────
 
         g_ssdpClient = std::make_shared<SSDPClient>();
         if (g_ssdpClient->Initialize() != ESP_OK) {

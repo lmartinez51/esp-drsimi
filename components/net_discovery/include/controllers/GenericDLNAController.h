@@ -115,7 +115,7 @@ public:
             }
             if (!isDial) {
                 for (const auto& svc : device.normalizedServices) {
-                    if (svc.name == "DIAL") {
+                    if (svc.name == "DIAL" || svc.name == "dial") {
                         isDial = true;
                         break;
                     }
@@ -123,25 +123,32 @@ public:
             }
 
             if (isDial) {
-                route.transport = TransportFamily::DIAL;
-                for (const auto& ep : device.endpoints) {
+                // FIX CLAVE: Iterar por índice sobre device.endpoints
+                for (size_t i = 0; i < device.endpoints.size(); ++i) {
+                    const auto& ep = device.endpoints[i];
                     if (ep.evidence.upnp.has_value()) {
-                        route.preferredEndpoint = &ep;
-                        
+                        std::string targetAppUrl = "";
                         if (!ep.evidence.upnp->applicationUrl.empty()) {
-                            route.metadata["Application-URL"] = ep.evidence.upnp->applicationUrl;
-                            if (g_verbose) {
-                                std::cout << "[Metadata] GenericDLNAController adding Application-URL to route: " << ep.evidence.upnp->applicationUrl << "\n";
-                            }
-                        } else {
-                            if (g_verbose) {
-                                std::cout << "[Metadata] GenericDLNAController found NO Application-URL in endpoint evidence\n";
-                            }
+                            targetAppUrl = ep.evidence.upnp->applicationUrl;
+                        } else if (!ep.evidence.upnp->locationUrl.empty()) {
+                            targetAppUrl = ep.evidence.upnp->locationUrl;
                         }
-                        return route;
+
+                        if (!targetAppUrl.empty()) {
+                            route.transport = TransportFamily::DIAL;
+                            // FIX CLAVE: Apuntar a la dirección del vector estable
+                            route.preferredEndpoint = &device.endpoints[i];
+                            route.metadata["Application-URL"] = targetAppUrl;
+                            if (g_verbose) {
+                                std::cout << "[DIAL] GenericDLNAController using discovered Application-URL: " << targetAppUrl << "\n";
+                            }
+                            return route;
+                        }
                     }
                 }
             }
+            // Guarda estricta: Jamás retornar una estructura 'route' incompleta o vacía
+            return std::nullopt;
         }
 
         // Default SOAP Support

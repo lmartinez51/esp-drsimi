@@ -12,7 +12,6 @@
 #include <errno.h>
 #include <sys/stat.h>
 
-
 #include "lua.h"
 #include "lualib.h"
 #include "lauxlib.h"
@@ -34,8 +33,6 @@ static EventGroupHandle_t s_claw_event_group = NULL;
 #define LUA_SAFE_TO_START_BIT BIT0
 #define LUA_ENGINE_READY_BIT BIT1
 
-// Written by Core 1 (lua_worker_task), read by Core 0 (WebRTC task).
-// Must be volatile to guarantee cross-core visibility on the LX7 dual-core.
 static volatile bool g_fs_corrupted = false;
 
 bool esp_claw_is_automation_ready(void) {
@@ -64,21 +61,17 @@ static void* claw_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
 }
 
 static void claw_push_rule_to_lua(lua_State *L, esp_claw_rule_t *rule) {
-    // Create the main rule table
     lua_newtable(L);
     
-    // Set call_id field
     lua_pushstring(L, rule->call_id);
     lua_setfield(L, -2, "call_id");
     
-    // Set trigger field
     lua_pushstring(L, rule->trigger);
     lua_setfield(L, -2, "trigger");
     
-    // Create conditions sub-table
     lua_newtable(L);
     for (int i = 0; i < rule->num_conditions; i++) {
-        lua_newtable(L); // Condition object
+        lua_newtable(L); 
         
         lua_pushstring(L, rule->conditions[i].sensor);
         lua_setfield(L, -2, "sensor");
@@ -95,12 +88,10 @@ static void claw_push_rule_to_lua(lua_State *L, esp_claw_rule_t *rule) {
         }
         lua_setfield(L, -2, "val");
         
-        // Arrays in Lua are 1-indexed
         lua_rawseti(L, -2, i + 1);
     }
     lua_setfield(L, -2, "conditions");
     
-    // Create actions sub-table
     lua_newtable(L);
     for (int i = 0; i < rule->num_actions; i++) {
         lua_pushstring(L, rule->actions[i].target);
@@ -140,8 +131,6 @@ static int l_send_webrtc_response(lua_State *L) {
         const char* call_id = lua_tostring(L, 1);
         const char* payload = lua_tostring(L, 2);
         if (call_id && payload) {
-            // Thread-Safety: send_function_output encapsulates webrtc_send_json
-            // which safely takes g_webrtc_mutex (Core 0/1 sync) before transmission.
             send_function_output(call_id, payload);
             sendEvent("response.create", NULL);
         }
@@ -181,7 +170,7 @@ static int l_send_intent(lua_State *L) {
 
             netdiscovery_log_ownership_event(msg.request_id, msg.call_id, "netdiscovery_intent_t pushing by value to queue");
             if (xQueueSend(netdiscovery_intent_queue, &msg, 0) != pdTRUE) {
-                ESP_LOGE(TAG, "[%u][%s] NetDiscovery IPC queue full (non-blocking overflow trigger)", (unsigned)msg.request_id, msg.call_id);
+                ESP_LOGE(TAG, "[%u][%s] NetDiscovery IPC queue full", (unsigned)msg.request_id, msg.call_id);
                 netdiscovery_log_ownership_event(msg.request_id, msg.call_id, "queue push failed - netdiscovery_intent_t destroyed");
                 send_function_output(call_id, "{\"error\": \"System Busy\"}");
                 sendEvent("response.create", NULL);
@@ -197,17 +186,10 @@ static int l_send_intent(lua_State *L) {
     return 0;
 }
 
-
 static int l_inject_webrtc_message(lua_State *L) {
     if (lua_gettop(L) >= 1) {
         const char* message = lua_tostring(L, 1);
         if (message) {
-            // Only send response.cancel when the server is actively generating.
-            // webrtc_is_server_generating() checks g_response_in_progress exclusively,
-            // matching the same guard used by the VAD speech_started handler.
-            // Crucially, it does NOT fire when only g_output_audio_active is true
-            // (i.e., server is done but ESP32 I2S buffer is still draining) — that
-            // was the source of the response_cancel_not_active error.
             if (webrtc_is_server_generating()) {
                 sendEvent("response.cancel", NULL);
             }
@@ -218,6 +200,7 @@ static int l_inject_webrtc_message(lua_State *L) {
     return 0;
 }
 
+// RESTAURADO: Hooks originales para mandar el JSON a PSRAM y salvar la RAM interna
 static void* cjson_spiram_malloc(size_t sz) { return heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT); }
 static void cjson_spiram_free(void* ptr) { heap_caps_free(ptr); }
 
@@ -238,7 +221,8 @@ static int l_save_rules_to_fs(lua_State *L) {
             cJSON *rule_json = cJSON_CreateObject();
             
             lua_getfield(L, -1, "trigger");
-            cJSON_AddStringToObject(rule_json, "trigger", lua_tostring(L, -1));
+            const char* trigger_str = lua_tostring(L, -1);
+            cJSON_AddStringToObject(rule_json, "trigger", trigger_str ? trigger_str : "");
             lua_pop(L, 1);
             
             cJSON *conditions_array = cJSON_AddArrayToObject(rule_json, "conditions");
@@ -247,39 +231,49 @@ static int l_save_rules_to_fs(lua_State *L) {
                 lua_pushnil(L);
                 while (lua_next(L, -2) != 0) {
                     cJSON *cond_json = cJSON_CreateObject();
-                    lua_getfield(L, -1, "sensor"); cJSON_AddStringToObject(cond_json, "sensor", lua_tostring(L, -1)); lua_pop(L, 1);
-                    lua_getfield(L, -1, "op"); cJSON_AddStringToObject(cond_json, "op", lua_tostring(L, -1)); lua_pop(L, 1);
+                    lua_getfield(L, -1, "sensor"); 
+                    const char* sensor_str = lua_tostring(L, -1);
+                    cJSON_AddStringToObject(cond_json, "sensor", sensor_str ? sensor_str : ""); 
+                    lua_pop(L, 1);
+                    
+                    lua_getfield(L, -1, "op"); 
+                    const char* op_str = lua_tostring(L, -1);
+                    cJSON_AddStringToObject(cond_json, "op", op_str ? op_str : ""); 
+                    lua_pop(L, 1);
+                    
                     lua_getfield(L, -1, "val");
                     if (lua_type(L, -1) == LUA_TNUMBER) {
                         cJSON_AddNumberToObject(cond_json, "val", lua_tonumber(L, -1));
                     } else if (lua_type(L, -1) == LUA_TBOOLEAN) {
                         cJSON_AddBoolToObject(cond_json, "val", lua_toboolean(L, -1));
                     } else {
-                        cJSON_AddStringToObject(cond_json, "val", lua_tostring(L, -1));
+                        const char* val_str = lua_tostring(L, -1);
+                        cJSON_AddStringToObject(cond_json, "val", val_str ? val_str : "");
                     }
                     lua_pop(L, 1);
                     cJSON_AddItemToArray(conditions_array, cond_json);
                     lua_pop(L, 1);
                 }
             }
-            lua_pop(L, 1); // pop conditions
+            lua_pop(L, 1);
             
             cJSON *actions_array = cJSON_AddArrayToObject(rule_json, "actions");
             lua_getfield(L, -1, "actions");
             if (lua_istable(L, -1)) {
                 lua_pushnil(L);
                 while (lua_next(L, -2) != 0) {
-                    cJSON_AddItemToArray(actions_array, cJSON_CreateString(lua_tostring(L, -1)));
+                    const char* act_str = lua_tostring(L, -1);
+                    cJSON_AddItemToArray(actions_array, cJSON_CreateString(act_str ? act_str : ""));
                     lua_pop(L, 1);
                 }
             }
-            lua_pop(L, 1); // pop actions
+            lua_pop(L, 1);
             
             cJSON_AddItemToArray(root_array, rule_json);
-            lua_pop(L, 1); // pop value, keep key for next
+            lua_pop(L, 1); 
         }
     }
-    lua_pop(L, 1); // pop rules_db
+    lua_pop(L, 1); 
 
     char *psram_json_str = cJSON_PrintUnformatted(root_array);
     if (psram_json_str) {
@@ -290,7 +284,7 @@ static int l_save_rules_to_fs(lua_State *L) {
             FILE *f = fopen("/littlefs/rules.json", "w");
             if (f) {
                 fputs(internal_json_buffer, f);
-                fsync(fileno(f)); // Force hardware flash write
+                fsync(fileno(f));
                 fclose(f);
                 ESP_LOGI(TAG, "Rules securely saved to LittleFS via Internal SRAM.");
             } else {
@@ -348,9 +342,9 @@ static void esp_claw_load_rules_from_fs(lua_State *L) {
                 cJSON *trigger = cJSON_GetObjectItem(rule_item, "trigger");
                 if (!cJSON_IsString(trigger)) continue;
 
-                lua_pushstring(L, trigger->valuestring); // key for rules_db
+                lua_pushstring(L, trigger->valuestring); 
 
-                lua_newtable(L); // The rule table
+                lua_newtable(L); 
                 
                 lua_pushstring(L, trigger->valuestring);
                 lua_setfield(L, -2, "trigger");
@@ -375,7 +369,7 @@ static void esp_claw_load_rules_from_fs(lua_State *L) {
                         else if (cJSON_IsBool(val)) { lua_pushboolean(L, cJSON_IsTrue(val)); lua_setfield(L, -2, "val"); }
                         else if (cJSON_IsString(val)) { lua_pushstring(L, val->valuestring); lua_setfield(L, -2, "val"); }
                         
-                        lua_settable(L, -3); // conditions[cond_idx] = cond_table
+                        lua_settable(L, -3); 
                     }
                     lua_setfield(L, -2, "conditions");
                 }
@@ -389,22 +383,23 @@ static void esp_claw_load_rules_from_fs(lua_State *L) {
                         if (cJSON_IsString(act_item)) {
                             lua_pushinteger(L, act_idx++);
                             lua_pushstring(L, act_item->valuestring);
-                            lua_settable(L, -3); // actions[act_idx] = act_item
+                            lua_settable(L, -3); 
                         }
                     }
                     lua_setfield(L, -2, "actions");
                 }
                 
-                lua_settable(L, -3); // rules_db[trigger] = rule_table
+                lua_settable(L, -3); 
             }
         }
-        lua_pop(L, 1); // pop rules_db
+        lua_pop(L, 1); 
         ESP_LOGI(TAG, "Rules securely loaded from LittleFS and injected into Lua rules_db.");
     }
     if (!root || !cJSON_IsArray(root)) {
         ESP_LOGE(TAG, "Failed to parse rules.json.");
-        if (root) cJSON_Delete(root);
     }
+    
+    if (root) cJSON_Delete(root);
     cJSON_InitHooks(NULL);
 }
 
@@ -425,11 +420,9 @@ static int c_message_handler(lua_State *L) {
         if (luaL_callmeta(L, 1, "__tostring") && lua_type(L, -1) == LUA_TSTRING) return 1;
         else msg = lua_pushfstring(L, "(error object is a %s value)", luaL_typename(L, 1));
     }
-    // Generar el traceback usando C, sin exponer la librería debug a Lua
     luaL_traceback(L, L, msg, 1);
     return 1;
 }
-
 
 static void lua_worker_task(void *arg) {
     ESP_LOGI(TAG, "Starting Lua Isolation Test Worker");
@@ -457,34 +450,14 @@ static void lua_worker_task(void *arg) {
     lua_register(L, "c_send_intent", l_send_intent);
 
     ESP_LOGI(TAG, "Registering IR bindings safely");
-    ESP_LOGI("ESP_CLAW_ISO", "HighWater BEFORE=%u", (unsigned)uxTaskGetStackHighWaterMark(NULL));
     luaL_requiref(L, "ir", luaopen_ir, 1);
     lua_pop(L, 1);
-    ESP_LOGI("ESP_CLAW_ISO", "IR bindings registered successfully");
+    ESP_LOGI(TAG, "IR bindings registered successfully");
     ESP_LOGI(TAG, "Lua initialized. Waiting for LUA_SAFE_TO_START_BIT...");
     xEventGroupWaitBits(s_claw_event_group, LUA_SAFE_TO_START_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     ESP_LOGI(TAG, "LUA_SAFE_TO_START_BIT received. Safe to access SPI Flash.");
 
-    // 1. Initialize LittleFS Partition dynamically
-    //
-    // NOTE ON format_if_mount_failed: this was flipped back to `true` to
-    // recover from a manual `esptool.py erase_region` of the partition.
-    // Leaving it `true` permanently reopens the exact silent
-    // whole-partition-wipe risk that was removed from main.c's old
-    // pre-boot bootstrapper: ANY future mount inconsistency (not just a
-    // deliberate raw erase) will now silently reformat this partition,
-    // taking rules.json and ir_db.json down with it, without a distinct
-    // log line to tell that apart from a genuine first boot. It's set back
-    // to `false` here; a raw-erase recovery should be a deliberate,
-    // one-off action (flash a build with this temporarily `true`, let it
-    // format once, then reflash normal firmware) rather than the
-    // permanent policy.
-    // format_if_mount_failed is permanently FALSE.
-    // The system must NEVER silently erase user data on a mount inconsistency.
-    // Recovery from a deliberately erased partition requires a one-off build
-    // with this temporarily set to true, then reflashing normal firmware.
-    // A corrupted-but-unmountable partition triggers degraded mode instead.
     esp_vfs_littlefs_conf_t conf = {
         .base_path = "/littlefs",
         .partition_label = "littlefs",
@@ -496,26 +469,11 @@ static void lua_worker_task(void *arg) {
                       "IR DB and Rules DB are OFFLINE. "
                       "Long-press MUTE for 10s to factory reset.");
         g_fs_corrupted = true;
-        // Do NOT load init.lua. Do NOT set LUA_ENGINE_READY_BIT.
-        // The dead-queue guard in webrtc.c (esp_claw_is_automation_ready)
-        // will handle all downstream IR/automation tool calls gracefully.
-        // The FS corruption alert is injected into the LLM context by
-        // webrtc_inject_arrival_context() once WebRTC connects.
     } else {
-        // Pre-create directory tree for NetDiscovery and others
         if (mkdir("/littlefs/netdiscovery", 0777) == -1 && errno != EEXIST) {
             ESP_LOGE(TAG, "Failed to create /littlefs/netdiscovery directory: %s", strerror(errno));
         }
 
-        // 2. Safely load the automation script from LittleFS.
-        //
-        // IMPORTANT: luaL_dofile() returning LUA_OK only proves the script
-        // ran with no Lua-level error. It says NOTHING about which globals
-        // it happened to define. A stale or schema-mismatched init.lua would
-        // "successfully execute" but not define register_rule, causing silent
-        // failures at runtime. We explicitly verify register_rule exists.
-        // If it is missing, we log a fatal error and leave the engine OFFLINE
-        // rather than auto-overwriting the file with a broken C-string stub.
         bool init_ok = (luaL_dofile(L, "/littlefs/init.lua") == LUA_OK);
         if (!init_ok) {
             ESP_LOGE(TAG, "Failed to load init.lua: %s", lua_tostring(L, -1));
@@ -531,11 +489,7 @@ static void lua_worker_task(void *arg) {
 
         if (init_ok) {
             ESP_LOGI(TAG, "Successfully executed init.lua");
-
-            // 3. Load stored dynamic rules
             esp_claw_load_rules_from_fs(L);
-
-            // 4. Notify C-system that Lua is online
             xEventGroupSetBits(s_claw_event_group, LUA_ENGINE_READY_BIT);
         }
     }
@@ -550,27 +504,19 @@ static void lua_worker_task(void *arg) {
                 esp_claw_rule_t* current = msg_rule;
                 while (current != NULL) {
                     esp_claw_rule_t* next = current->next;
-                    
-                    // (Hardware Lockdown Interceptor Bypass removed for Phase 1 Rollback)
 
-                    lua_pushcfunction(L, c_message_handler);   // [handler]
+                    lua_pushcfunction(L, c_message_handler);   
                     int handler_idx = lua_gettop(L);
 
-                    lua_getglobal(L, "register_rule");          // [handler, func]
+                    lua_getglobal(L, "register_rule");          
                     
                     if (lua_isfunction(L, -1)) {
-                        claw_push_rule_to_lua(L, current);      // [handler, func, arg]
+                        claw_push_rule_to_lua(L, current);      
                         
                         lua_sethook(L, instruction_limit_hook, LUA_MASKCOUNT, 50000);
                         if (lua_pcall(L, 1, 0, handler_idx) != LUA_OK) {
                             ESP_LOGE(TAG, "Lua Fatal Error:\n%s", lua_tostring(L, -1));
                             lua_pop(L, 1);
-                            // The Lua side never got to call c_send_webrtc_response
-                            // for this call_id. Left alone, the Realtime agent
-                            // waits forever for a function result that will
-                            // never arrive - that's the "fatal hang". Answer
-                            // it directly from C so the conversation can
-                            // continue.
                             if (current->call_id[0] != '\0') {
                                 send_function_output(current->call_id, "{\"error\":\"rule execution failed\"}");
                                 sendEvent("response.create", NULL);
@@ -578,18 +524,14 @@ static void lua_worker_task(void *arg) {
                         }
                         lua_sethook(L, instruction_limit_hook, 0, 0);
                     } else {
-                        lua_pop(L, 1); // pop the non-function value
+                        lua_pop(L, 1); 
                         ESP_LOGE(TAG, "register_rule function not found in Lua environment");
-                        // Same problem as above: nothing Lua-side will ever
-                        // answer this call_id if register_rule doesn't
-                        // exist. Answer it from C so the caller isn't left
-                        // hanging forever.
                         if (current->call_id[0] != '\0') {
                             send_function_output(current->call_id, "{\"error\":\"automation engine unavailable\"}");
                             sendEvent("response.create", NULL);
                         }
                     }
-                    lua_pop(L, 1); // pop the handler
+                    lua_pop(L, 1); 
                     
                     free(current);
                     current = next;
@@ -621,6 +563,7 @@ esp_err_t esp_claw_init(void) {
         return ESP_ERR_NO_MEM;
     }
 
+    // RESTAURADO: El stack vuelve estrictamente a sus 16KB originales
     ESP_LOGI(TAG, "Spawning isolated Lua worker task (Internal SRAM - 16KB)");
     if (xTaskCreatePinnedToCoreWithCaps(lua_worker_task, "lua_worker", 16384, NULL, 3, NULL, 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "Failed to spawn lua_worker_task.");

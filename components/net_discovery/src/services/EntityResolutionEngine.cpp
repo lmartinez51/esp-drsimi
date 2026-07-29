@@ -42,6 +42,25 @@ ResolutionResult EntityResolutionEngine::Resolve(const Observation& observation)
         }
     }
 
+    // Priority 1.5: IP Address Match (Consolidar servicios en la misma IP física)
+    if (!matchedEntity.has_value() && !observation.endpoints.empty()) {
+        const std::string& obsIp = observation.endpoints[0].ip;
+        if (!obsIp.empty() && obsIp != "0.0.0.0") {
+            auto entities = m_repository.GetAllEntities();
+            for (const auto& entity : entities) {
+                for (const auto& ep : entity.endpoints) {
+                    if (ep.ip == obsIp) {
+                        matchedEntity = entity;
+                        highestConfidence = 85.0f;
+                        matchedRules.push_back("IP_ADDRESS_MATCH (85%)");
+                        break;
+                    }
+                }
+                if (matchedEntity.has_value()) break;
+            }
+        }
+    }
+
     // ----------------------------------------------------------------
     // Priority 2: Serial Number (Confidence: 95.0)
     // ----------------------------------------------------------------

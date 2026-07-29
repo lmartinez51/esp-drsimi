@@ -12,6 +12,7 @@
 #include <chrono>
 #include "esp_log.h"
 #include <cerrno>
+#include <memory>
 
 static const char* TAG = "NetDiscovery";
 
@@ -71,9 +72,11 @@ bool WebSocketTransport::DoHandshake(TcpSocket& socket, const std::string& host,
     }
     
     std::string response;
-    char buffer[1024];
+    const size_t BUFFER_SIZE = 1024;
+    auto buffer_ptr = std::make_unique<char[]>(BUFFER_SIZE);
+    char* buffer = buffer_ptr.get();
     while (response.find("\r\n\r\n") == std::string::npos) {
-        auto r = socket.Receive(buffer, sizeof(buffer));
+        auto r = socket.Receive(buffer, BUFFER_SIZE);
         if (!r.has_value() || r.value() <= 0) {
             ESP_LOGE(TAG, "[WebSocketTransport] Connection closed while reading HTTP Upgrade response");
             return false;

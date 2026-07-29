@@ -26,8 +26,7 @@ public:
             Capability::PowerControl,
             Capability::VolumeControl,
             Capability::Mute,
-            Capability::InputSelection,
-            Capability::ApplicationLaunching
+            Capability::InputSelection
         };
     }
 
@@ -97,16 +96,24 @@ public:
     }
 
     bool ValidateEndpoints(const LogicalDevice& device) const override {
+        // 1. Buscar en servicios normalizados (incluyendo DIAL)
         for (const auto& svc : device.normalizedServices) {
-            if (svc.name == "RemoteControlReceiver" || svc.name == "MultiScreenService") {
+            if (svc.name == "RemoteControlReceiver" || 
+                svc.name == "MultiScreenService" || 
+                svc.name == "DIAL" || 
+                svc.name == "dial") {
                 return true;
             }
         }
+
+        // 2. Buscar en tipos de dispositivo en la firma
         for (const auto& dt : device.signature.deviceTypes) {
-            if (dt.find("RemoteControlReceiver") != std::string::npos) {
+            if (dt.find("RemoteControlReceiver") != std::string::npos ||
+                dt.find("dial") != std::string::npos) {
                 return true;
             }
         }
+
         return false;
     }
 
@@ -121,7 +128,53 @@ public:
         const LogicalDevice& device, 
         const ActionDescriptor& action) const override {
         
-        // 1. Explicit Allowlist of actions this controller natively implements
+        // Handle Application Launching via DIAL
+        if (action.id == ActionId::LaunchApplication) {
+            ExecutionRoute route;
+            // IMPORTANTE: Iterar por índice/referencia directa al vector original (device.endpoints)
+            // para evitar punteros colgados (dangling pointers) en el stack.
+            for (size_t i = 0; i < device.endpoints.size(); ++i) {
+                const auto& ep = device.endpoints[i];
+                std::string targetAppUrl = "";
+                bool isDiscovered = false;
+
+                // 1. Intentar usar la URL descubierta dinámicamente en SSDP/UPnP
+                if (ep.evidence.upnp.has_value()) {
+                    if (!ep.evidence.upnp->applicationUrl.empty()) {
+                        targetAppUrl = ep.evidence.upnp->applicationUrl;
+                        isDiscovered = true;
+                    } else if (!ep.evidence.upnp->locationUrl.empty()) {
+                        targetAppUrl = ep.evidence.upnp->locationUrl;
+                        isDiscovered = true;
+                    }
+                }
+
+                // 2. Fallback empírico reservado exclusivamente para Samsung TV
+                // NOTA: Derivado de observaciones en la red local para esta TV específica.
+                if (targetAppUrl.empty() && !ep.ip.empty()) {
+                    targetAppUrl = "http://" + ep.ip + ":8080/ws/app/";
+                    isDiscovered = false;
+                }
+
+                if (!targetAppUrl.empty()) {
+                    route.transport = TransportFamily::DIAL;
+                    // FIX CLAVE: Apuntar al elemento real del vector de la entidad (RAM estable)
+                    route.preferredEndpoint = &device.endpoints[i];
+                    route.metadata["Application-URL"] = targetAppUrl;
+
+                    if (g_verbose) {
+                        if (isDiscovered) {
+                            std::cout << "[DIAL] Using discovered Application-URL: " << targetAppUrl << "\n";
+                        } else {
+                            std::cout << "[DIAL] Application-URL missing, using empirical IP-based fallback guess: " << targetAppUrl << "\n";
+                        }
+                    }
+                    return route;
+                }
+            }
+            return std::nullopt;
+        }
+
         std::string keyName = "";
         if (action.id == ActionId::PowerOn) {
             if (device.signature.mac.has_value() && !device.signature.mac->empty()) {
@@ -133,19 +186,18 @@ public:
                 }
                 return route;
             } else {
-                // Cannot WakeOnLAN without MAC address
                 return std::nullopt;
             }
         } else if (action.id == ActionId::PowerOff) {
             keyName = "KEY_POWER";
         } else if (action.id == ActionId::SendKey) {
-            keyName = "KEY_UNKNOWN"; // We would normally extract the key from params
+            keyName = "KEY_UNKNOWN";
         } else if (action.id == ActionId::VolumeUp) {
             keyName = "KEY_VOLUP";
         } else if (action.id == ActionId::VolumeDown) {
             keyName = "KEY_VOLDOWN";
         } else if (action.id == ActionId::SetVolume) {
-            keyName = "KEY_VOLDOWN"; // Simplification since SetVolume needs semantic mapping to keys
+            keyName = "KEY_VOLDOWN";
         } else if (action.id == ActionId::Mute) {
             keyName = "KEY_MUTE";
         }
@@ -165,24 +217,24 @@ public:
             }
             route.metadata["WebSocket-Host"] = hostIp;
             route.metadata["WebSocket-Port"] = "8001";
-            
-            // Assign the strategy to handle request building and response processing
             route.strategy = std::make_shared<Strategy::SamsungWebSocketStrategy>();
             
-            for (const auto& ep : device.endpoints) {
+            // FIX CLAVE 2: Eliminar el dangling pointer en el bloque WebSocket
+            for (size_t i = 0; i < device.endpoints.size(); ++i) {
+                const auto& ep = device.endpoints[i];
                 if (ep.evidence.upnp.has_value() && ep.evidence.upnp->deviceType.find("RemoteControlReceiver") != std::string::npos) {
-                    route.preferredEndpoint = &ep;
+                    route.preferredEndpoint = &device.endpoints[i];
                     return route;
                 }
             }
+            
             if (!device.endpoints.empty()) {
                 route.preferredEndpoint = &device.endpoints[0];
                 return route;
             }
-            return std::nullopt; // No valid endpoint found even for supported action
+            return std::nullopt;
         }
 
-        // 2. Deny-by-Default for EVERYTHING else
         return std::nullopt;
     }
 

@@ -1,5 +1,5 @@
 #include "ble_common.h"
-
+#include "esp_heap_caps.h"
 #include "ble_config.h"
 #include "esp_log.h"
 #include "freertos/task.h"
@@ -296,6 +296,8 @@ esp_err_t ble_common_deinit(uint32_t timeout_ms)
             host_stop_semaphore = NULL;
         }
         ESP_LOGI(TAG, "BLE common deinit complete; port was already down");
+        // ESP_LOGW("HEAP_TRACE", "=== HEAP AFTER BLE FULL DEINIT ===");
+        // heap_caps_print_heap_info(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         return ESP_OK;
     }
 

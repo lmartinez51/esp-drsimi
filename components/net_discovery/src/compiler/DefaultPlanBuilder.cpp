@@ -111,8 +111,15 @@ std::shared_ptr<Expressions::IPredicate> DefaultPlanBuilder::ParsePredicate(
         auto pos = expr.find(entry.sym);
         if (pos == std::string::npos) continue;
 
+        size_t opLen = std::strlen(entry.sym);
+        
+        // GUARD: Prevenir substr fuera de rango si la expresión está cortada o corrupta
+        if (pos + opLen > expr.size()) {
+            continue;
+        }
+
         std::string lhs = expr.substr(0, pos);
-        std::string rhs = expr.substr(pos + std::strlen(entry.sym));
+        std::string rhs = expr.substr(pos + opLen);
 
         // Trim whitespace
         auto trim = [](std::string s) {

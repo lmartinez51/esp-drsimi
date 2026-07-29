@@ -7,15 +7,21 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <queue>
+#include "esp_log.h"
+
+static const char* TAG = "StaticPlanValidator";
 
 namespace NetDiscovery {
 namespace Plan {
 
-ValidationReport StaticPlanValidator::ValidateGraph(const IExecutionGraph& graph) const {
+    ValidationReport StaticPlanValidator::ValidateGraph(const IExecutionGraph& graph) const {
+    ESP_LOGI(TAG, ">>> ValidateGraph: ENTER");
     ValidationReport report;
 
+    ESP_LOGI(TAG, ">>> ValidateGraph: Fetching nodes & edges...");
     auto nodes = graph.GetNodes();
     auto edges = graph.GetEdges();
+    ESP_LOGI(TAG, ">>> ValidateGraph: Nodes count=%zu, Edges count=%zu", nodes.size(), edges.size());
 
     if (nodes.empty()) {
         report.AddIssue(ValidationSeverity::Error, ValidationCode::EmptyGraph, "Graph", "ExecutionGraph contains no nodes.");
@@ -23,6 +29,7 @@ ValidationReport StaticPlanValidator::ValidateGraph(const IExecutionGraph& graph
     }
 
     // 1. Duplicate node ID check & non-empty ID check
+    ESP_LOGI(TAG, ">>> ValidateGraph: Step 1 (Node IDs check)...");
     std::unordered_map<std::string, bool> nodeIds;
     for (const auto& node : nodes) {
         if (!node) {
@@ -40,6 +47,7 @@ ValidationReport StaticPlanValidator::ValidateGraph(const IExecutionGraph& graph
     }
 
     // 2. Edge reference integrity check
+    ESP_LOGI(TAG, ">>> ValidateGraph: Step 2 (Edge Integrity)...");
     std::unordered_map<std::string, std::vector<std::string>> adj;
     std::unordered_map<std::string, int> inDegree;
     for (const auto& pair : nodeIds) {
@@ -60,12 +68,14 @@ ValidationReport StaticPlanValidator::ValidateGraph(const IExecutionGraph& graph
     }
 
     // 3. Entry node validation
+    ESP_LOGI(TAG, ">>> ValidateGraph: Step 3 (Initial Nodes)...");
     auto initialNodes = graph.GetInitialNodes();
     if (initialNodes.empty()) {
         report.AddIssue(ValidationSeverity::Error, ValidationCode::MissingEntryNode, "Graph", "No valid initial entry nodes found in graph.");
     }
 
     // 4. Dependency cycle detection (Kahn's Topological Sort Algorithm)
+    ESP_LOGI(TAG, ">>> ValidateGraph: Step 4 (Kahn Algo Topological Sort)...");
     std::queue<std::string> q;
     for (const auto& pair : inDegree) {
         if (pair.second == 0) {
@@ -98,6 +108,7 @@ ValidationReport StaticPlanValidator::ValidateGraph(const IExecutionGraph& graph
     }
 
     // 5. Orphan & Unreachable node detection
+    ESP_LOGI(TAG, ">>> ValidateGraph: Step 5 (Orphan & Unreachable check)...");
     if (nodes.size() > 1) {
         for (const auto& pair : nodeIds) {
             std::string id = pair.first;
@@ -119,6 +130,7 @@ ValidationReport StaticPlanValidator::ValidateGraph(const IExecutionGraph& graph
         }
     }
 
+    ESP_LOGI(TAG, ">>> ValidateGraph: EXIT SUCCESS");
     return report;
 }
 

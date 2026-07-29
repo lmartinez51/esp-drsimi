@@ -6,6 +6,7 @@
  */
 
 #include "compiler/DefaultIntentCompiler.h"
+#include "semantic/IntentCanonicalizer.h"
 #include "core/ActionId.h"
 #include "esp_log.h"
 
@@ -62,7 +63,13 @@ std::shared_ptr<ASTNode> DefaultIntentCompiler::CompileNode(const IntentActionNo
 
     // --- Resolve action name to ActionId ------------------------------------
     if (!node.actionName.empty()) {
-        ast->resolvedAction = FromString(node.actionName);
+        // 1. Instanciar el canonicalizador (ya que el método Normalize no es estático)
+        semantic::IntentCanonicalizer canonicalizer;
+        ActionId canonical = canonicalizer.Normalize(node.actionName);
+
+        // 2. Si Normalize encuentra un alias, usarlo. Si regresa Unknown, usar FromString como fallback.
+        ast->resolvedAction = (canonical != ActionId::Unknown) ? canonical : FromString(node.actionName);
+
         if (ast->resolvedAction == ActionId::Unknown && ast->kind == ASTNodeKind::Action) {
             ESP_LOGW(TAG, "CompileNode: unknown actionName='%s'", node.actionName.c_str());
         }
