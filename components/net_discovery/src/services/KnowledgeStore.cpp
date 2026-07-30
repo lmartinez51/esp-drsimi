@@ -248,8 +248,6 @@ std::string KnowledgeStore::SerializeEntity(const KnowledgeEntity& entity) const
     oss << "VENDOR=" << entity.identity.vendor << "\n";
     oss << "MODEL=" << entity.identity.model << "\n";
     oss << "SERIAL=" << entity.identity.serialNumber << "\n";
-    oss << "FIRST_DISCOVERED=" << entity.firstDiscovered << "\n";
-    oss << "LAST_SEEN=" << entity.lastSeen << "\n";
     
     if (!entity.compatibleControllers.empty()) {
         oss << "CONTROLLERS=";

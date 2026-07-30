@@ -277,9 +277,19 @@ std::vector<LogicalDevice> DeviceFusionEngine::Fuse(const std::vector<IdentityEv
                 fusionScore += policy.samePresentationUrlMatch;
             }
 
-            // 5. IP Match
+            // 5. IP Match & Canonical Physical Device Heuristic
             if (!baseDev.primaryIp.empty() && baseDev.primaryIp == logicalDev.primaryIp) {
                 fusionScore += policy.sameIpMatch;
+                // If same IP AND (same manufacturer OR same model OR same friendly name), boost score to guarantee physical fusion
+                if (!baseDev.manufacturer.empty() && baseDev.manufacturer == logicalDev.manufacturer) {
+                    fusionScore += policy.sameManufacturerMatch + 30;
+                }
+                if (!baseDev.model.empty() && baseDev.model == logicalDev.model) {
+                    fusionScore += policy.sameModelMatch + 30;
+                }
+                if (!baseDev.displayName.empty() && baseDev.displayName == logicalDev.displayName) {
+                    fusionScore += policy.sameFriendlyNameMatch + 30;
+                }
             }
 
             // 6. Friendly Name Match
@@ -298,9 +308,34 @@ std::vector<LogicalDevice> DeviceFusionEngine::Fuse(const std::vector<IdentityEv
             }
 
             if (fusionScore >= policy.fusionThreshold) {
-                // Merge baseDev into logicalDev
+                // Merge endpoints without duplicates
                 for (auto& ep : baseDev.endpoints) {
-                    logicalDev.endpoints.push_back(std::move(ep));
+                    bool epExists = false;
+                    for (auto& existingEp : logicalDev.endpoints) {
+                        if (existingEp.ip == ep.ip) {
+                            if (existingEp.serverHeader.empty()) existingEp.serverHeader = ep.serverHeader;
+                            if (!existingEp.evidence.upnp.has_value() && ep.evidence.upnp.has_value()) {
+                                existingEp.evidence.upnp = ep.evidence.upnp;
+                            } else if (existingEp.evidence.upnp.has_value() && ep.evidence.upnp.has_value()) {
+                                auto& existUpnp = existingEp.evidence.upnp.value();
+                                const auto& liveUpnp = ep.evidence.upnp.value();
+                                if (existUpnp.applicationUrl.empty()) existUpnp.applicationUrl = liveUpnp.applicationUrl;
+                                if (existUpnp.locationUrl.empty()) existUpnp.locationUrl = liveUpnp.locationUrl;
+                                for (const auto& s : liveUpnp.services) {
+                                    bool sFound = false;
+                                    for (const auto& eSvc : existUpnp.services) {
+                                        if (eSvc.serviceType == s.serviceType) { sFound = true; break; }
+                                    }
+                                    if (!sFound) existUpnp.services.push_back(s);
+                                }
+                            }
+                            epExists = true;
+                            break;
+                        }
+                    }
+                    if (!epExists) {
+                        logicalDev.endpoints.push_back(std::move(ep));
+                    }
                 }
                 
                 if (logicalDev.displayName.empty() && !baseDev.displayName.empty()) {
