@@ -14,6 +14,7 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <unordered_set>
 
 namespace NetDiscovery {
 
@@ -47,6 +48,29 @@ public:
     void ArchiveEntity(const std::string& entityId);
 
     /**
+     * @brief Returns the calculated ID of the currently loaded network fingerprint.
+     *        Used by external components to reconstruct LittleFS paths without hardcoding SSIDs.
+     */
+    std::string GetCurrentNetworkId() const { return m_currentNetwork.CalculateId(); }
+
+    /**
+     * @brief Completely removes an entity from memory and persistent storage.
+     */
+    bool RemoveEntity(const std::string& entityId);
+
+    /**
+     * @brief Zero-copy administrative lookup: searches m_entities in-place by IP, UUID, or
+     *        case-insensitive substring on displayName/vendor/model. No heap allocation on caller side.
+     * @param targetLower Null-terminated lowercase target string.
+     * @param outId       Receives the canonical persistentId of the matched entity.
+     * @param outDisplay  Receives the displayName of the matched entity.
+     * @return  1  exactly one match found (outId/outDisplay populated)
+     *          0  no match found
+     *         >1  ambiguous (multiple matches found, outId/outDisplay empty)
+     */
+    int FindEntityForAdmin(const char* targetLower, std::string& outId, std::string& outDisplay) const;
+
+    /**
      * @brief Mark an entity for update with new credentials.
      */
     void UpdateCredentials(const std::string& deviceId, const std::string& key, const std::string& value);
@@ -62,14 +86,16 @@ public:
     KnowledgeConfidence ComputeConfidence(const KnowledgeEntity& entity) const;
 
     /**
-     * @brief Retrieve all entities currently loaded in memory.
+     * @brief Retrieve a snapshot of all entities currently loaded in memory.
+     * Returns by value — thread-safe, no dangling references across FreeRTOS tasks.
      */
-    std::vector<KnowledgeEntity>& GetLoadedEntities();
+    std::vector<KnowledgeEntity> GetLoadedEntities() const;
 
 private:
     std::unique_ptr<IKnowledgeStore> m_backend;
     NetworkFingerprint m_currentNetwork;
     std::map<std::string, KnowledgeEntity> m_entities; // In-memory cache of current network
+    std::unordered_set<std::string> m_tombstones; // Session-only forgotten entity tombstone IDs
 
     // Internal serialization helpers (simple key-value text format)
     std::string SerializeEntity(const KnowledgeEntity& entity) const;
@@ -80,7 +106,13 @@ private:
     void MergeCapabilities(KnowledgeEntity& existing, const std::vector<Capability>& liveCaps);
     void MergeCapabilityProfiles(KnowledgeEntity& existing, const std::vector<CapabilityProfile>& liveProfiles);
     void AddJournalEntry(KnowledgeEntity& entity, JournalEventType type, const std::string& description);
-    
+
+    /**
+     * @brief Boot-time self-healing pass: detect entities sharing the same IP or MAC
+     *        and merge them into a single canonical entry, purging redundant LittleFS files.
+     */
+    void ConsolidateDuplicates(const std::string& networkId);
+
     void PersistEntity(const KnowledgeEntity& entity);
 };
 

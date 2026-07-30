@@ -137,7 +137,7 @@ std::vector<std::string> FileKnowledgeStore::LoadAllEntities(const std::string& 
 void FileKnowledgeStore::DeleteEntityData(const std::string& networkId, 
                                           const std::string& entityId) {
     const std::string filePath = GetEntityFilePath(networkId, entityId);
-    std::remove(filePath.c_str());
+    netdiscovery_submit_store_delete(filePath.c_str());
 }
 
 std::string FileKnowledgeStore::GetNetworkDir(const std::string& networkId) const {

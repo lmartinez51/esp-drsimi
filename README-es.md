@@ -147,6 +147,12 @@ Puedes controlar varias funciones del dispositivo simplemente hablando con el Dr
   - *"Doctor, borra el botón de encendido de la tele."*
   - *"Doctor, ¿qué dispositivos infrarrojos tienes registrados?"*
   - **Acción**: Ejecuta `ir_transmit_command`, `ir_learn_button`, `ir_delete_device` o `ir_get_devices`.
+- **Controlar Dispositivos Inteligentes (NetDiscovery / DIAL)**:
+  - *"Doctor, ponle pausa a la tele de la sala."*
+  - *"Doctor, abre Netflix en el proyector."*
+  - *"Doctor, borra la TV de la recámara."*
+  - *"Doctor, borra el router ZTE de la lista de dispositivos."*
+  - **Acción**: Ejecuta `netdiscovery_control` (soportando acciones operativas como `pause` o `launch_app`, y acciones administrativas como `forget_device`/`delete_device` para purgar de forma segura las entidades de la memoria RAM y LittleFS Flash).
 
 ---
 

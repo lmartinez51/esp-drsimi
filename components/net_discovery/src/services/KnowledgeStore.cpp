@@ -2,6 +2,7 @@
 #include <iostream>
 #include <sstream>
 #include <chrono>
+#include <cstring>
 #include "esp_log.h"
 
 static const char* TAG = "NetDiscovery";
@@ -27,7 +28,8 @@ void KnowledgeStore::ResolveKnownNetwork(const NetworkFingerprint& network) {
 
     if (!m_backend) return;
 
-    std::vector<std::string> rawDataList = m_backend->LoadAllEntities(network.CalculateId());
+    std::string networkId = network.CalculateId();
+    std::vector<std::string> rawDataList = m_backend->LoadAllEntities(networkId);
     for (const auto& raw : rawDataList) {
         KnowledgeEntity entity = DeserializeEntity(raw);
         if (!entity.persistentId.empty()) {
@@ -35,6 +37,11 @@ void KnowledgeStore::ResolveKnownNetwork(const NetworkFingerprint& network) {
         } else {
             ESP_LOGE(TAG, "[KnowledgeStore] Failed to deserialize entity or empty ID.");
         }
+    }
+
+    // Boot-time self-healing: merge legacy duplicate entities that share the same IP/MAC.
+    if (m_entities.size() > 1) {
+        ConsolidateDuplicates(networkId);
     }
 }
 
@@ -51,6 +58,38 @@ void KnowledgeStore::UpdateFromDiscovery(const LogicalDevice& liveDevice) {
             entityId = "unknown_device_" + std::to_string(now);
         }
     }
+
+    // Tombstone check: reject any re-discovery of a forgotten entity (by ID or IP)
+    if (m_tombstones.count(entityId) > 0 || m_tombstones.count(liveDevice.id) > 0) {
+        ESP_LOGI(TAG, "\xf0\x9f\x9b\xa1\xef\xb8\x8f [KnowledgeStore] Entity '%s' is tombstoned for active session. Discovery update ignored.", entityId.c_str());
+        return;
+    }
+    if (!liveDevice.endpoints.empty() && !liveDevice.endpoints[0].ip.empty()) {
+        if (m_tombstones.count(liveDevice.endpoints[0].ip) > 0) {
+            ESP_LOGI(TAG, "\xf0\x9f\x9b\xa1\xef\xb8\x8f [KnowledgeStore] IP '%s' is tombstoned. Discovery update ignored.",
+                     liveDevice.endpoints[0].ip.c_str());
+            return;
+        }
+    }
+
+    // IP-based deduplication: if a new UUID arrives for an IP we already track,
+    // redirect to the canonical entity instead of creating a duplicate entry.
+    if (m_entities.find(entityId) == m_entities.end()) {
+        if (!liveDevice.endpoints.empty() && !liveDevice.endpoints[0].ip.empty()) {
+            const std::string& liveIp = liveDevice.endpoints[0].ip;
+            for (const auto& kv : m_entities) {
+                for (const auto& ep : kv.second.endpoints) {
+                    if (!ep.ip.empty() && ep.ip == liveIp) {
+                        ESP_LOGI(TAG, "[KnowledgeStore] IP-dedup: redirecting new ID '%s' -> canonical '%s' (shared IP: %s)",
+                                 entityId.c_str(), kv.first.c_str(), liveIp.c_str());
+                        entityId = kv.first; // merge into canonical
+                        goto ip_dedup_done;
+                    }
+                }
+            }
+        }
+    }
+    ip_dedup_done:
 
     if (m_entities.find(entityId) == m_entities.end()) {
         // Nueva Entidad
@@ -168,13 +207,13 @@ KnowledgeConfidence KnowledgeStore::ComputeConfidence(const KnowledgeEntity& ent
     return conf;
 }
 
-std::vector<KnowledgeEntity>& KnowledgeStore::GetLoadedEntities() {
-    static std::vector<KnowledgeEntity> temp;
-    temp.clear();
-    for (auto& kv : m_entities) {
-        temp.push_back(kv.second);
+std::vector<KnowledgeEntity> KnowledgeStore::GetLoadedEntities() const {
+    std::vector<KnowledgeEntity> result;
+    result.reserve(m_entities.size());
+    for (const auto& kv : m_entities) {
+        result.push_back(kv.second);
     }
-    return temp;
+    return result;
 }
 
 void KnowledgeStore::MergeEndpoints(KnowledgeEntity& existing, const std::vector<ProtocolEndpoint>& liveEndpoints) {
@@ -407,6 +446,204 @@ void KnowledgeStore::PersistEntity(const KnowledgeEntity& entity) {
     if (m_backend && !m_currentNetwork.CalculateId().empty()) {
         m_backend->SaveEntityData(m_currentNetwork.CalculateId(), entity.persistentId, SerializeEntity(entity));
     }
+}
+
+bool KnowledgeStore::RemoveEntity(const std::string& entityId) {
+    m_tombstones.insert(entityId);
+
+    auto it = m_entities.find(entityId);
+    if (it != m_entities.end()) {
+        if (!it->second.persistentId.empty()) m_tombstones.insert(it->second.persistentId);
+        if (!it->second.displayName.empty()) m_tombstones.insert(it->second.displayName);
+        for (const auto& ep : it->second.endpoints) {
+            if (!ep.uuid.empty()) m_tombstones.insert(ep.uuid);
+            if (!ep.ip.empty()) m_tombstones.insert(ep.ip);
+        }
+
+        std::string pId = it->second.persistentId.empty() ? entityId : it->second.persistentId;
+        m_entities.erase(it);
+
+        if (m_backend && !m_currentNetwork.CalculateId().empty()) {
+            m_backend->DeleteEntityData(m_currentNetwork.CalculateId(), pId);
+        }
+        ESP_LOGI(TAG, "\xf0\x9f\x9b\xa1\xef\xb8\x8f [KnowledgeStore] Entity '%s' removed from RAM/Flash & registered in tombstones.", entityId.c_str());
+        return true;
+    }
+    ESP_LOGW(TAG, "[KnowledgeStore] Entity '%s' not found in m_entities during RemoveEntity, registered tombstone.", entityId.c_str());
+    return false;
+}
+
+void KnowledgeStore::ConsolidateDuplicates(const std::string& networkId) {
+    // Maps primary IP -> canonical persistentId (first entity found that owns that IP)
+    std::map<std::string, std::string> ipToCanonical;
+    // Maps MAC -> canonical persistentId
+    std::map<std::string, std::string> macToCanonical;
+    // Duplicate IDs to erase from m_entities after iteration
+    std::vector<std::string> toRemove;
+
+    for (auto& kv : m_entities) {
+        const std::string& candidateId = kv.first;
+        KnowledgeEntity& candidate = kv.second;
+        bool isDuplicate = false;
+        std::string canonicalId;
+
+        // --- Check by primary IP ---
+        for (const auto& ep : candidate.endpoints) {
+            if (ep.ip.empty()) continue;
+            auto ipIt = ipToCanonical.find(ep.ip);
+            if (ipIt != ipToCanonical.end()) {
+                canonicalId = ipIt->second;
+                isDuplicate = true;
+                break;
+            }
+        }
+
+        // --- Check by hardware MAC (if not already flagged as duplicate) ---
+        if (!isDuplicate && !candidate.identity.macAddress.empty()) {
+            auto macIt = macToCanonical.find(candidate.identity.macAddress);
+            if (macIt != macToCanonical.end()) {
+                canonicalId = macIt->second;
+                isDuplicate = true;
+            }
+        }
+
+        if (isDuplicate) {
+            // Merge this duplicate into the canonical entity
+            KnowledgeEntity& canonical = m_entities[canonicalId];
+            MergeEndpoints(canonical, candidate.endpoints);
+            MergeCapabilities(canonical, candidate.capabilities.GetCapabilities());
+            MergeCapabilityProfiles(canonical, candidate.capabilityProfiles);
+            // Carry over controllers not already present
+            for (const auto& ctrl : candidate.compatibleControllers) {
+                bool found = false;
+                for (const auto& existing : canonical.compatibleControllers) {
+                    if (existing.name == ctrl.name) { found = true; break; }
+                }
+                if (!found) canonical.compatibleControllers.push_back(ctrl);
+            }
+            // Prefer the richer displayName
+            if (canonical.displayName.empty() && !candidate.displayName.empty()) {
+                canonical.displayName = candidate.displayName;
+            }
+
+            ESP_LOGW(TAG, "[KnowledgeStore] \xf0\x9f\x94\xa7 Auto-consolidation: merged duplicate '%s' into canonical '%s'. Purging from LittleFS.",
+                     candidateId.c_str(), canonicalId.c_str());
+
+            // Permanently delete the redundant file from LittleFS
+            if (m_backend && !networkId.empty()) {
+                m_backend->DeleteEntityData(networkId, candidateId);
+            }
+            toRemove.push_back(candidateId);
+        } else {
+            // Register all IPs and MAC of this canonical entity
+            for (const auto& ep : candidate.endpoints) {
+                if (!ep.ip.empty()) ipToCanonical.emplace(ep.ip, candidateId);
+            }
+            if (!candidate.identity.macAddress.empty()) {
+                macToCanonical.emplace(candidate.identity.macAddress, candidateId);
+            }
+        }
+    }
+
+    // Remove duplicates from in-memory map
+    for (const auto& id : toRemove) {
+        m_entities.erase(id);
+    }
+
+    if (!toRemove.empty()) {
+        ESP_LOGI(TAG, "[KnowledgeStore] Auto-consolidation complete: removed %d duplicate entities. Re-persisting canonicals.",
+                 (int)toRemove.size());
+        // Re-persist all canonicals to ensure merged data is reflected on Flash
+        for (auto& kv : m_entities) {
+            PersistEntity(kv.second);
+        }
+    }
+}
+
+int KnowledgeStore::FindEntityForAdmin(const char* targetLower, std::string& outId, std::string& outDisplay) const {
+    // All matching done in-place over m_entities — no heap allocation on caller side.
+    // Three-pass priority: 1=exact IP, 2=exact UUID/persistentId, 3=substring on name/vendor/model.
+    const KnowledgeEntity* singleMatch = nullptr;
+    int matchCount = 0;
+
+    // Pass 1: Exact IP match
+    for (const auto& kv : m_entities) {
+        for (const auto& ep : kv.second.endpoints) {
+            if (!ep.ip.empty() && strcmp(ep.ip.c_str(), targetLower) == 0) {
+                singleMatch = &kv.second;
+                matchCount++;
+                break;
+            }
+        }
+    }
+
+    // Pass 2: Exact UUID / persistentId match (only if Pass 1 found nothing)
+    if (matchCount == 0) {
+        for (const auto& kv : m_entities) {
+            if (strcmp(kv.second.persistentId.c_str(), targetLower) == 0) {
+                singleMatch = &kv.second;
+                matchCount++;
+            } else {
+                for (const auto& ep : kv.second.endpoints) {
+                    if (!ep.uuid.empty() && strcmp(ep.uuid.c_str(), targetLower) == 0) {
+                        singleMatch = &kv.second;
+                        matchCount++;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Pass 3: Bidirectional case-insensitive substring on displayName, vendor, model (only if still nothing)
+    if (matchCount == 0 && targetLower[0] != '\0') {
+        char tmp[64];
+        for (const auto& kv : m_entities) {
+            bool found = false;
+
+            // Check displayName
+            strlcpy(tmp, kv.second.displayName.c_str(), sizeof(tmp));
+            for (char* p = tmp; *p; ++p) *p = (char)std::tolower((unsigned char)*p);
+            if (tmp[0]) {
+                if (strstr(tmp, targetLower) || (strlen(tmp) >= 3 && strstr(targetLower, tmp))) {
+                    found = true;
+                }
+            }
+
+            // Check vendor
+            if (!found) {
+                strlcpy(tmp, kv.second.identity.vendor.c_str(), sizeof(tmp));
+                for (char* p = tmp; *p; ++p) *p = (char)std::tolower((unsigned char)*p);
+                if (tmp[0]) {
+                    if (strstr(tmp, targetLower) || (strlen(tmp) >= 3 && strstr(targetLower, tmp))) {
+                        found = true;
+                    }
+                }
+            }
+
+            // Check model
+            if (!found) {
+                strlcpy(tmp, kv.second.identity.model.c_str(), sizeof(tmp));
+                for (char* p = tmp; *p; ++p) *p = (char)std::tolower((unsigned char)*p);
+                if (tmp[0]) {
+                    if (strstr(tmp, targetLower) || (strlen(tmp) >= 3 && strstr(targetLower, tmp))) {
+                        found = true;
+                    }
+                }
+            }
+
+            if (found) {
+                singleMatch = &kv.second;
+                matchCount++;
+            }
+        }
+    }
+
+    if (matchCount == 1 && singleMatch) {
+        outId      = singleMatch->persistentId;
+        outDisplay = singleMatch->displayName;
+    }
+    return matchCount;
 }
 
 } // namespace NetDiscovery

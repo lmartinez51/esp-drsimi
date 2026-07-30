@@ -19,7 +19,7 @@ void AuthenticationManager::InjectCredentials(const std::string& deviceId, Execu
     }
 
     // Interrogate the KnowledgeStore for credentials for this deviceId
-    auto& entities = m_store->GetLoadedEntities();
+    auto entities = m_store->GetLoadedEntities();
     for (const auto& entity : entities) {
         if (entity.persistentId == deviceId || entity.lastObservedIdentity == deviceId) {
             for (const auto& kvp : entity.credentials) {

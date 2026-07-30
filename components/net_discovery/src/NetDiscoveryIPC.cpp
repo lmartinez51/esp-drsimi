@@ -149,7 +149,74 @@ static void netdiscovery_ipc_listener_task(void* arg) {
                 }
             }
 
-            // Stage 3: Detailed Knowledge Layer Validation
+            // ── EARLY PIPELINE BRANCH: Administrative Intents (forget_device) ──────────────
+            // Intercept BEFORE the KnowledgeStore dump and operational media pipeline.
+            if (strcmp(msg.action, "forget_device") == 0 || strcmp(msg.action, "delete_device") == 0) {
+                ESP_LOGI(TAG, "[%u][%s] \xf0\x9f\x9b\xa0\xef\xb8\x8f [AdminPipeline] Early branch for '%s' (target: '%s')",
+                         (unsigned)msg.request_id, msg.call_id, msg.action, msg.target);
+                ESP_LOGW(TAG, "[AdminPipeline] Internal Free: %u B, Largest Block: %u B",
+                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+
+                // Build lowercase target entirely on the stack (no heap touch)
+                char targetLower[IPC_TARGET_MAX_LEN];
+                strlcpy(targetLower, msg.target, sizeof(targetLower));
+                for (char* p = targetLower; *p; ++p)
+                    *p = (char)std::tolower((unsigned char)*p);
+
+                // Zero-copy in-place lookup inside KnowledgeStore — no vector copy, no heap allocation
+                std::string matchedId;
+                std::string matchedDisplay;
+                int matchCount = g_knowledgeStore->FindEntityForAdmin(targetLower, matchedId, matchedDisplay);
+
+                // Response: all on-stack buffers only
+                char response_json[512];
+                if (matchCount == 0) {
+                    snprintf(response_json, sizeof(response_json),
+                             "{\"status\":\"error\",\"code\":\"NOT_FOUND\",\"message\":\"Device '%s' not found\"}",
+                             msg.target);
+                    ESP_LOGW(TAG, "[AdminPipeline] Device '%s' not found", msg.target);
+                    send_function_output(msg.call_id, response_json);
+                } else if (matchCount > 1) {
+                    snprintf(response_json, sizeof(response_json),
+                             "{\"status\":\"error\",\"code\":\"AMBIGUOUS_TARGET\",\"message\":\"Multiple devices match '%s'. Please be more specific.\"}",
+                             msg.target);
+                    ESP_LOGW(TAG, "[AdminPipeline] Ambiguous target '%s' matched %d entities", msg.target, matchCount);
+                    send_function_output(msg.call_id, response_json);
+                } else {
+                    // Cancel any pending LittleFS write before deleting (sanitized path matching GetEntityFilePath)
+                    std::string safeId = matchedId;
+                    for (char& c : safeId) {
+                        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') {
+                            c = '_';
+                        }
+                    }
+                    char cancelPath[128];
+                    snprintf(cancelPath, sizeof(cancelPath),
+                             "/littlefs/knowledge/%s/%s.json",
+                             g_knowledgeStore->GetCurrentNetworkId().c_str(),
+                             safeId.c_str());
+                    netdiscovery_cancel_store_write(cancelPath);
+
+                    bool removed = g_knowledgeStore->RemoveEntity(matchedId);
+                    if (removed) {
+                        snprintf(response_json, sizeof(response_json),
+                                 "{\"status\":\"success\",\"message\":\"Device '%s' successfully removed\"}",
+                                 matchedDisplay.c_str());
+                        ESP_LOGI(TAG, "[AdminPipeline] Removed device '%s' (ID: %s)", matchedDisplay.c_str(), matchedId.c_str());
+                    } else {
+                        snprintf(response_json, sizeof(response_json),
+                                 "{\"status\":\"error\",\"code\":\"REMOVE_FAILED\",\"message\":\"Failed to purge '%s'\"}",
+                                 matchedDisplay.c_str());
+                        ESP_LOGE(TAG, "[AdminPipeline] Failed to purge device '%s'", matchedDisplay.c_str());
+                    }
+                    send_function_output(msg.call_id, response_json);
+                }
+
+                continue; // BYPASS operational media pipeline completely
+            }
+
+            // Stage 3: Detailed Knowledge Layer Validation (operational intents only)
             ESP_LOGW(TAG, "[MEM CHECKPOINT A - Stage 2 Start] Internal Free: %u B, Largest Block: %u B",
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
@@ -188,6 +255,7 @@ static void netdiscovery_ipc_listener_task(void* arg) {
             }
             ESP_LOGI(TAG, "==========================================");
 
+            // ── OPERATIONAL MEDIA PIPELINE ─────────────────────────────────
             std::string lowerTarget = msg.target;
             for (auto& c : lowerTarget) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
@@ -367,7 +435,13 @@ static void netdiscovery_ipc_listener_task(void* arg) {
 // this statically-allocated task; producers hand over an owned heap buffer.
 // ============================================================================
 
+enum class StoreJobType {
+    WRITE,
+    DELETE
+};
+
 struct nd_write_job_t {
+    StoreJobType type;
     char path[128];
     char* json_buf; // Buffer allocated by caller (e.g. PSRAM or Heap); freed by writer task
     size_t len;
@@ -400,10 +474,30 @@ static void nd_ensure_parent_dirs(const char* file_path) {
     }
 }
 
+static bool is_write_job_cancelled(const char* path);
+
 static void nd_store_writer_task(void* arg) {
     nd_write_job_t job;
     for (;;) {
         if (xQueueReceive(nd_write_queue, &job, portMAX_DELAY) == pdTRUE) {
+            if (job.type == StoreJobType::DELETE) {
+                struct stat st;
+                if (stat(job.path, &st) == 0) {
+                    if (unlink(job.path) == 0) {
+                        ESP_LOGI(TAG, "\xf0\x9f\x97\x91\xef\xb8\x8f [StoreWriter] Entity file deleted from LittleFS: %s", job.path);
+                    } else {
+                        ESP_LOGE(TAG, "[StoreWriter] Failed to delete %s (errno %d)", job.path, errno);
+                    }
+                }
+                continue;
+            }
+
+            if (is_write_job_cancelled(job.path)) {
+                ESP_LOGI(TAG, "🚫 [StoreWriter] Skipping cancelled write job for %s", job.path);
+                free(job.json_buf);
+                continue;
+            }
+
             nd_ensure_parent_dirs(job.path);
 
             // ── SMART DIFF CHECK (Ejecutado de forma segura desde RAM Interna) ──
@@ -468,6 +562,7 @@ extern "C" bool netdiscovery_submit_store_write(const char* path, char* json_buf
         return false;
     }
     nd_write_job_t job = {};
+    job.type = StoreJobType::WRITE;
     if (strlcpy(job.path, path, sizeof(job.path)) >= sizeof(job.path)) {
         ESP_LOGE(TAG, "[StoreWriter] Path too long: %s", path);
         return false;
@@ -479,6 +574,56 @@ extern "C" bool netdiscovery_submit_store_write(const char* path, char* json_buf
         return false; // Ownership stays with caller, who must free the buffer
     }
     return true; // Writer task now owns json_buf
+}
+
+extern "C" bool netdiscovery_submit_store_delete(const char* path) {
+    if (!nd_write_queue || !path) {
+        return false;
+    }
+    nd_write_job_t job = {};
+    job.type = StoreJobType::DELETE;
+    if (strlcpy(job.path, path, sizeof(job.path)) >= sizeof(job.path)) {
+        ESP_LOGE(TAG, "[StoreWriter] Delete path too long: %s", path);
+        return false;
+    }
+    if (xQueueSend(nd_write_queue, &job, 0) != pdTRUE) {
+        ESP_LOGE(TAG, "[StoreWriter] Write queue full, dropping delete job for %s", path);
+        return false;
+    }
+    return true;
+}
+
+#define MAX_CANCELLED_JOBS 8
+static char s_cancelled_jobs[MAX_CANCELLED_JOBS][128];
+static size_t s_cancelled_count = 0;
+static portMUX_TYPE s_cancel_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static bool is_write_job_cancelled(const char* path) {
+    if (!path || !path[0]) return false;
+    bool cancelled = false;
+    portENTER_CRITICAL(&s_cancel_mux);
+    for (size_t i = 0; i < s_cancelled_count; i++) {
+        if (strcmp(s_cancelled_jobs[i], path) == 0) {
+            cancelled = true;
+            for (size_t j = i; j < s_cancelled_count - 1; j++) {
+                strlcpy(s_cancelled_jobs[j], s_cancelled_jobs[j + 1], 128);
+            }
+            s_cancelled_count--;
+            break;
+        }
+    }
+    portEXIT_CRITICAL(&s_cancel_mux);
+    return cancelled;
+}
+
+extern "C" void netdiscovery_cancel_store_write(const char* path) {
+    if (!path || !path[0]) return;
+    portENTER_CRITICAL(&s_cancel_mux);
+    if (s_cancelled_count < MAX_CANCELLED_JOBS) {
+        strlcpy(s_cancelled_jobs[s_cancelled_count++], path, 128);
+    }
+    portEXIT_CRITICAL(&s_cancel_mux);
+    ESP_LOGI(TAG, "🚫 [StoreWriter] Registered write cancel request for %s", path);
 }
 
 static StaticQueue_t* s_intent_queue_struct = nullptr;

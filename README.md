@@ -155,7 +155,9 @@ You can control various device features simply by talking to Dr. Simi. Here are 
 - **Control Smart Devices (NetDiscovery / DIAL)**:
   - *"Doctor, ponle pausa a la tele de la sala."* (Context: "Doc, pause the living room TV.")
   - *"Doctor, abre Netflix en el proyector."* (Context: "Doc, open Netflix on the projector.")
-  - **Action**: Triggers `netdiscovery_control`.
+  - *"Doctor, borra la TV de la recámara."* (Context: "Doc, remove/forget the bedroom TV.")
+  - *"Doctor, borra el router ZTE de los dispositivos."* (Context: "Doc, forget the ZTE router.")
+  - **Action**: Triggers `netdiscovery_control` (with operational actions like `pause`, `launch_app`, or administrative actions like `forget_device`/`delete_device` to safely purge entities from RAM and LittleFS storage).
 
 ---
 

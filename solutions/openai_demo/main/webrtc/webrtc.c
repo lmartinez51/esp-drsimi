@@ -1613,7 +1613,7 @@ static class_t *build_netdiscovery_control_class(void)
     static attribute_t properties[] = {
         {
             .name = "action",
-            .desc = "Action to perform on target device (e.g., 'power_on', 'power_off', 'pause', 'resume', 'mute', 'unmute', 'set_volume', 'launch_app', 'open_netflix').",
+            .desc = "Action to perform on target device (e.g., 'power_on', 'power_off', 'pause', 'resume', 'mute', 'unmute', 'set_volume', 'launch_app', 'open_netflix', 'forget_device').",
             .type = ATTRIBUTE_TYPE_STRING,
             .required = true,
         },

@@ -71,6 +71,12 @@ void netdiscovery_init_writer_task(void);
 // ownership stays with the caller.
 bool netdiscovery_submit_store_write(const char* path, char* json_buf, size_t len);
 
+// Enqueues an asynchronous LittleFS delete job (executed safely from Internal DRAM stack).
+bool netdiscovery_submit_store_delete(const char* path);
+
+// Cancels and purges any queued asynchronous LittleFS write matching path.
+void netdiscovery_cancel_store_write(const char* path);
+
 // Triggers the initial one-shot SSDP discovery.
 // Returns true if the scan task was created; false on allocation failure
 // (caller must NOT arm the scan timeout timer in that case).
