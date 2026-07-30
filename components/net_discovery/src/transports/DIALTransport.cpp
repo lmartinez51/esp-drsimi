@@ -108,14 +108,16 @@ ExecutionResult DIALTransport::Execute(const ExecutionRequest& request,
     };
     
     // Uso de puntero al Heap para ejecutar la acción
+    ESP_LOGI(TAG, "--> Initiating HTTP POST to URL: '%s'", launchUrl.c_str());
     auto postResOpt = client->Post(launchUrl, "", dialHeaders);
     if (!postResOpt.has_value()) {
-        ESP_LOGE(TAG, "HTTP POST failed.");
+        ESP_LOGE(TAG, "<-- HTTP POST failed or timed out for URL: %s", launchUrl.c_str());
         result.status = ExecutionStatus::TransportUnavailable;
         result.errorMessage = "HTTP POST failed for DIAL launch.";
         return result;
     }
     HttpResponse postRes = postResOpt.value();
+    ESP_LOGI(TAG, "<-- HTTP POST completed! Status: %d", postRes.statusCode);
     
     ESP_LOGI(TAG, "HTTP Method      : POST");
     ESP_LOGI(TAG, "URL              : %s", launchUrl.c_str());

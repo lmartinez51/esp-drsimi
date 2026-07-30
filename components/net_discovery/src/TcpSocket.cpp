@@ -62,9 +62,10 @@ esp_err_t TcpSocket::Connect(const std::string& host, uint16_t port)
         }
 
         struct timeval tv;
-        tv.tv_sec = 15;
+        tv.tv_sec = 12;
         tv.tv_usec = 0;
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
         if (connect(sock, ptr->ai_addr, ptr->ai_addrlen) == -1) {
             close(sock);

@@ -150,6 +150,9 @@ static void netdiscovery_ipc_listener_task(void* arg) {
             }
 
             // Stage 3: Detailed Knowledge Layer Validation
+            ESP_LOGW(TAG, "[MEM CHECKPOINT A - Stage 2 Start] Internal Free: %u B, Largest Block: %u B",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
             ESP_LOGI(TAG, "[%u][%s] Stage 2 (Knowledge Lookup) starting for target: '%s'", (unsigned)msg.request_id, msg.call_id, req.targetDescription.c_str());
             auto availableEntities = g_knowledgeStore->GetLoadedEntities();
 
@@ -243,6 +246,9 @@ static void netdiscovery_ipc_listener_task(void* arg) {
 
             semantic::DeviceMatcher matcher;
             auto candidates = matcher.Match(req.targetDescription, availableDevices);
+            ESP_LOGW(TAG, "[MEM CHECKPOINT B - Post Match] Internal Free: %u B, Largest Block: %u B",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
             
             std::string matchedDevId = "";
 
@@ -253,6 +259,9 @@ static void netdiscovery_ipc_listener_task(void* arg) {
                 // Fast-Track Nivel 2: Reducir availableDevices a las entidades emparejadas (1 o más), descartando el resto
                 availableDevices = std::move(candidates);
                 ESP_LOGI(TAG, "[Fast-Track L2] Target Pruned: availableDevices reduced to %d matched entities", (int)availableDevices.size());
+                ESP_LOGW(TAG, "[MEM CHECKPOINT C - Post L2 Prune] Internal Free: %u B, Largest Block: %u B",
+                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
                 const char* primary_ctrl = !selectedDev.controllerCandidates.empty() ? selectedDev.controllerCandidates.front().name.c_str() : "GenericController";
                 ESP_LOGI(TAG, "[%u][%s] Knowledge Layer Matched Entity : %s", (unsigned)msg.request_id, msg.call_id, selectedDev.displayName.c_str());
@@ -274,92 +283,72 @@ static void netdiscovery_ipc_listener_task(void* arg) {
                 ESP_LOGW(TAG, "[%u][%s] Knowledge Layer Match: No entity match found for '%s'", (unsigned)msg.request_id, msg.call_id, req.targetDescription.c_str());
             }
 
-            // Stage 4: Execution Callback (TEMPORARY BYPASS - Pure Socket Test via DLNA/DIAL Fallback)
+            // Stage 4: Execution Callback (On-demand dynamic task using Bifurcated Orchestrator & Zero-Copy std::move)
             auto execution_lambda = [msg, req, availableDevices = std::move(availableDevices), matchedDevId, ts, mem_before]() mutable {
-                ESP_LOGW(TAG, "=========================================================");
-                ESP_LOGW(TAG, "[BYPASS TEST] Skipping Orchestrator AST/DAG layers!");
-                ESP_LOGW(TAG, "[BYPASS TEST] Testing Direct Network Socket via DIALTransport...");
-                ESP_LOGW(TAG, "=========================================================");
+                ESP_LOGI(TAG, "[%u][%s] Stage 6 (Orchestrator) processing for action='%s'",
+                         (unsigned)msg.request_id, msg.call_id, req.rawIntent.c_str());
 
-                // 1. Extraer nombre de la app (por defecto "YouTube")
-                std::string appName = "YouTube";
-                auto paramIt = req.rawParameters.find("name");
-                if (paramIt != req.rawParameters.end()) {
-                    appName = paramIt->second;
-                }
-
-                // 2. Resolver objetivo y su IP dinámica
-                const NetDiscovery::LogicalDevice* targetDev = nullptr;
+                const NetDiscovery::LogicalDevice* safeDevPtr = nullptr;
                 if (!matchedDevId.empty()) {
                     for (const auto& dev : availableDevices) {
                         if (dev.id == matchedDevId) {
-                            targetDev = &dev;
+                            safeDevPtr = &dev;
                             break;
                         }
                     }
                 }
-                if (!targetDev && !availableDevices.empty()) {
-                    targetDev = &availableDevices.front();
-                }
 
-                if (!targetDev || targetDev->endpoints.empty()) {
-                    ESP_LOGE(TAG, "[BYPASS TEST] FAILED: No valid target device or IP endpoint found.");
-                    send_function_output(msg.call_id, "{\"error\": \"bypass_no_device_ip\"}");
-                    return;
-                }
-
-                std::string targetIp = targetDev->endpoints.front().ip;
-                ESP_LOGI(TAG, "[BYPASS TEST] Target Device: '%s' | Dynamic IP: %s", targetDev->displayName.c_str(), targetIp.c_str());
-
-                // 3. Construir ExecutionRequest y ExecutionRoute directos
-                NetDiscovery::ActionDescriptor actionDesc;
-                actionDesc.displayName = req.rawIntent;
-
-                NetDiscovery::ExecutionRequest execReq{
-                    *targetDev,
-                    actionDesc,
-                    {{"name", appName}},
-                    NetDiscovery::ExecutionContext{}
-                };
-
-                NetDiscovery::ExecutionRoute route;
-                route.transport = NetDiscovery::TransportFamily::DIAL;
-                route.preferredEndpoint = &targetDev->endpoints.front();
-
-                // Asignar manualmente la Application-URL genérica DLNA/DIAL basada en la IP dinámica
-                route.metadata["Application-URL"] = "http://" + targetIp + ":8080/ws/app/";
-                ESP_LOGI(TAG, "[BYPASS TEST] Set Application-URL: %s", route.metadata["Application-URL"].c_str());
-
-                // 4. Invocación DIRECTA del transporte DIAL (crea HttpClient dinámico en Heap)
-                NetDiscovery::DIALTransport dialTransport;
-                ESP_LOGI(TAG, "[BYPASS TEST] Executing DIALTransport::Execute directly...");
-                NetDiscovery::ExecutionResult res = dialTransport.Execute(execReq, route);
-
+                auto cancelToken = std::make_shared<std::atomic<bool>>(false);
+                auto err = g_orchestrator->Orchestrate(req, availableDevices, cancelToken, safeDevPtr);
                 ts.t6_semantic_done = esp_timer_get_time();
-                ts.t7_response_sent = esp_timer_get_time();
 
-                if (res.status == NetDiscovery::ExecutionStatus::Success) {
-                    ESP_LOGI(TAG, "[BYPASS TEST] SUCCESS! YouTube launched on TV (%s)", targetIp.c_str());
-                    char response_buf[512];
+                UBaseType_t highWaterMarkWords = uxTaskGetStackHighWaterMark(NULL);
+                size_t unusedStackBytes = highWaterMarkWords * sizeof(StackType_t);
+                size_t usedStackBytes = 8192 - unusedStackBytes;
+                ESP_LOGW(TAG, "=========================================================");
+                ESP_LOGW(TAG, "[STACK HIGH-WATER MARK] Task 'nd_exec': Allocated=8192 B, Used=%u B, Unused (Min Free)=%u B",
+                         (unsigned)usedStackBytes, (unsigned)unusedStackBytes);
+                ESP_LOGW(TAG, "=========================================================");
+
+                if (err == semantic::SemanticError::None) {
+                    ESP_LOGI(TAG, "[%u][%s] Stage 7 (Completion Stub): Success", (unsigned)msg.request_id, msg.call_id);
+                    char response_buf[256];
                     snprintf(response_buf, sizeof(response_buf),
-                             "{\"status\":\"success\",\"bypass\":true,\"request_id\":%u,\"action\":\"%s\",\"target\":\"%s\",\"ip\":\"%s\"}",
-                             (unsigned)msg.request_id, msg.action, msg.target, targetIp.c_str());
+                             "{\"status\":\"success\",\"request_id\":%u,\"action\":\"%s\",\"target\":\"%s\"}",
+                             (unsigned)msg.request_id, msg.action, msg.target);
                     send_function_output(msg.call_id, response_buf);
                 } else {
-                    ESP_LOGE(TAG, "[BYPASS TEST] DIAL Direct Exec Failed: %s (Status %d)", 
-                             res.errorMessage.c_str(), static_cast<int>(res.status));
-                    char errStr[512];
-                    snprintf(errStr, sizeof(errStr), "{\"error\":\"bypass_dial_failed\",\"reason\":\"%s\",\"status\":%d}",
-                             res.errorMessage.c_str(), static_cast<int>(res.status));
+                    ESP_LOGW(TAG, "[%u][%s] Stage 7 (Completion Stub): Error code %d", (unsigned)msg.request_id, msg.call_id, static_cast<int>(err));
+                    char errStr[256];
+                    const char* reasonStr = (err == semantic::SemanticError::DeviceNotFound) 
+                        ? "Target device not found or offline" 
+                        : (err == semantic::SemanticError::MissingCapability)
+                        ? "Target device found, but does not support requested capability or feature"
+                        : (err == semantic::SemanticError::ExecutionFailed)
+                        ? "Target device was found on network, but network command connection was refused or failed"
+                        : "Execution failed";
+                    snprintf(errStr, sizeof(errStr), "{\"error\":\"semantic_error_%d\",\"reason\":\"%s\",\"request_id\":%u}",
+                             static_cast<int>(err), reasonStr, (unsigned)msg.request_id);
                     send_function_output(msg.call_id, errStr);
                 }
 
-                netdiscovery_log_ownership_event(msg.request_id, msg.call_id, "bypass intent processing complete");
+                ts.t7_response_sent = esp_timer_get_time();
+
+                netdiscovery_memory_snapshot_t mem_after;
+                netdiscovery_get_memory_snapshot(&mem_after);
+                netdiscovery_print_latency_report(msg.request_id, msg.call_id, &ts);
+                netdiscovery_print_memory_report("Tool Call Execution", &mem_before, &mem_after);
+                netdiscovery_print_stack_report(NULL, xTaskGetCurrentTaskHandle());
+                netdiscovery_print_queue_report(NULL, netdiscovery_intent_queue);
+                netdiscovery_log_ownership_event(msg.request_id, msg.call_id, "intent processing complete - destroyed");
             };
 
-            bool threadCreated = NetDiscovery::ThreadHelper::StartInternalPinnedThread("nd_exec", 6144, 4, 0, execution_lambda);
+            ESP_LOGW(TAG, "[MEM CHECKPOINT D - Pre Thread Spawn] Internal Free: %u B, Largest Block: %u B",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+            bool threadCreated = NetDiscovery::ThreadHelper::StartPinnedThread("nd_exec", 8192, 4, 0, execution_lambda);
             if (!threadCreated) {
-                ESP_LOGE(TAG, "[%u][%s] FAILED to spawn dynamic 'nd_exec' task (out of memory)!",
+                ESP_LOGE(TAG, "[%u][%s] FAILED to spawn dynamic 'nd_exec' task in PSRAM!",
                          (unsigned)msg.request_id, msg.call_id);
                 char errStr[256];
                 snprintf(errStr, sizeof(errStr),
@@ -422,7 +411,8 @@ static void nd_store_writer_task(void* arg) {
             if (stat(job.path, &st) == 0 && (size_t)st.st_size == job.len) {
                 FILE* check_f = fopen(job.path, "rb");
                 if (check_f) {
-                    char* read_buf = (char*)malloc(job.len);
+                    char* read_buf = (char*)heap_caps_malloc(job.len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                    if (!read_buf) read_buf = (char*)malloc(job.len);
                     if (read_buf) {
                         size_t r = fread(read_buf, 1, job.len, check_f);
                         fclose(check_f);

@@ -7,6 +7,7 @@
 #include <iostream>
 #include "../include/TcpSocket.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include <vector>
 #include <algorithm>
 #include <cctype>
@@ -105,7 +106,9 @@ std::optional<HttpResponse> HttpClient::SendRequest(const std::string& method, c
 
         std::string buffer;
         const size_t CHUNK_SIZE = 4096;
-        auto chunk_ptr = std::make_unique<char[]>(CHUNK_SIZE);
+        char* raw_chunk = static_cast<char*>(heap_caps_malloc(CHUNK_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!raw_chunk) raw_chunk = static_cast<char*>(malloc(CHUNK_SIZE));
+        std::unique_ptr<char[], void(*)(void*)> chunk_ptr(raw_chunk, [](void* p){ free(p); });
         char* chunk = chunk_ptr.get();
         while (true) {
             auto r = sock.Receive(chunk, CHUNK_SIZE);
@@ -114,9 +117,16 @@ std::optional<HttpResponse> HttpClient::SendRequest(const std::string& method, c
             buffer.append(chunk, r.value());
         }
 
+        ESP_LOGI(TAG, "HttpClient: Receive loop complete. Total bytes received: %u", (unsigned)buffer.size());
+
+        if (buffer.empty()) {
+            ESP_LOGE(TAG, "HttpClient: HTTP Response Timeout — Received 0 bytes after socket timeout.");
+            return std::nullopt;
+        }
+
         std::string line;
         if (!GetLine(buffer, line)) {
-            ESP_LOGE(TAG, "Invalid HTTP response (no status line)");
+            ESP_LOGE(TAG, "HttpClient: Invalid HTTP response — Received %u bytes but no CRLF status line found.", (unsigned)buffer.size());
             return std::nullopt;
         }
 

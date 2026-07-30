@@ -22,6 +22,7 @@
 #include "core/PolicySelector.h"
 #include "controllers/GenericDLNAController.h"
 #include "controllers/SamsungController.h"
+#include "transports/DIALTransport.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -188,8 +189,119 @@ NetDiscovery::ExecutionResult SemanticOrchestrator::ExecuteCompiledPlan(
 }
 
 // ============================================================================
-// Legacy backward-compatibility entry point
+// Fast-Path (Direct Execution) Evaluation & Entry Points
 // ============================================================================
+
+bool SemanticOrchestrator::IsAtomicIntent(const std::string& intentName) const {
+    std::string lower = intentName;
+    for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+    return (lower == "launch_app" ||
+            lower == "power_on" ||
+            lower == "power_off" ||
+            lower == "mute" ||
+            lower == "unmute" ||
+            lower == "set_volume" ||
+            lower == "channel_change" ||
+            lower == "media_play" ||
+            lower == "media_pause" ||
+            lower == "media_stop");
+}
+
+SemanticError SemanticOrchestrator::DirectExecutionPath(
+    const SemanticRequest&                           request,
+    const NetDiscovery::LogicalDevice&              targetDev)
+{
+    ESP_LOGI(TAG, "[Fast-Path DirectExecution] Processing atomic action '%s' for device '%s' (IP: %s)",
+             request.rawIntent.c_str(), targetDev.displayName.c_str(),
+             !targetDev.endpoints.empty() ? targetDev.endpoints.front().ip.c_str() : "N/A");
+
+    // a. Select controller via SelectController(targetDev)
+    NetDiscovery::IDeviceController* controller = SelectController(targetDev);
+    if (!controller) {
+        ESP_LOGE(TAG, "[Fast-Path DirectExecution] No controller available for device '%s'", targetDev.displayName.c_str());
+        return SemanticError::WorkflowGenerationFailed;
+    }
+
+    // b. Construct ActionDescriptor
+    NetDiscovery::ActionDescriptor actionDesc;
+    actionDesc.displayName = request.rawIntent;
+    if (request.rawIntent == "launch_app") {
+        actionDesc.id = NetDiscovery::ActionId::LaunchApplication;
+    } else if (request.rawIntent == "power_on") {
+        actionDesc.id = NetDiscovery::ActionId::PowerOn;
+    } else if (request.rawIntent == "power_off") {
+        actionDesc.id = NetDiscovery::ActionId::PowerOff;
+    }
+
+    std::string targetIp = (!targetDev.endpoints.empty()) ? targetDev.endpoints.front().ip : "";
+    NetDiscovery::ExecutionRoute route;
+
+    // Direct Directive: Standardize launch_app for Smart TVs & Streaming Devices to DIAL port 8080
+    if (request.rawIntent == "launch_app") {
+        route.transport = NetDiscovery::TransportFamily::DIAL;
+        if (!targetDev.endpoints.empty()) {
+            route.preferredEndpoint = &targetDev.endpoints.front();
+        }
+        route.metadata["Application-URL"] = "http://" + targetIp + ":8080/ws/app/";
+        ESP_LOGI(TAG, "[Fast-Path DirectExecution] Standardized launch_app route to DIAL endpoint: %s",
+                 route.metadata["Application-URL"].c_str());
+    } else {
+        // Preserve existing controller resolution (GenericDLNAController / SamsungController) for all other actions
+        auto routeOpt = controller->GetExecutionRoute(targetDev, actionDesc);
+        if (routeOpt.has_value()) {
+            route = routeOpt.value();
+        } else {
+            route.transport = NetDiscovery::TransportFamily::DIAL;
+            if (!targetDev.endpoints.empty()) {
+                route.preferredEndpoint = &targetDev.endpoints.front();
+            }
+        }
+
+        // Apply DIAL metadata fallback guard for non-launch_app DIAL actions if metadata is missing
+        if (route.transport == NetDiscovery::TransportFamily::DIAL && route.metadata["Application-URL"].empty()) {
+            if (!targetIp.empty()) {
+                route.metadata["Application-URL"] = "http://" + targetIp + ":8080/ws/app/";
+                ESP_LOGW(TAG, "[Fast-Path DirectExecution] Applied DIAL Application-URL fallback: %s",
+                         route.metadata["Application-URL"].c_str());
+            }
+        }
+    }
+
+    // Prepare ExecutionRequest parameters
+    std::string appName = "YouTube";
+    auto paramIt = request.rawParameters.find("name");
+    if (paramIt != request.rawParameters.end()) {
+        appName = paramIt->second;
+    }
+
+    NetDiscovery::ExecutionRequest execReq{
+        targetDev,
+        actionDesc,
+        {{"name", appName}},
+        NetDiscovery::ExecutionContext{}
+    };
+
+    // d. Execute via transport->Execute(execReq, route)
+    NetDiscovery::ExecutionResult res;
+    if (route.transport == NetDiscovery::TransportFamily::DIAL) {
+        NetDiscovery::DIALTransport dialTransport;
+        res = dialTransport.Execute(execReq, route);
+    } else {
+        NetDiscovery::DIALTransport dialTransport;
+        res = dialTransport.Execute(execReq, route);
+    }
+
+    if (res.status == NetDiscovery::ExecutionStatus::Success) {
+        ESP_LOGI(TAG, "[Fast-Path DirectExecution] SUCCESS executing '%s' on '%s'",
+                 request.rawIntent.c_str(), targetDev.displayName.c_str());
+        return SemanticError::None;
+    } else {
+        ESP_LOGE(TAG, "[Fast-Path DirectExecution] FAILED: %s (Status %d)",
+                 res.errorMessage.c_str(), static_cast<int>(res.status));
+        return SemanticError::ExecutionFailed;
+    }
+}
 
 SemanticError SemanticOrchestrator::Orchestrate(
     const SemanticRequest&                           request,
@@ -197,7 +309,31 @@ SemanticError SemanticOrchestrator::Orchestrate(
     std::shared_ptr<std::atomic<bool>>               cancelToken,
     const NetDiscovery::LogicalDevice*               targetDeviceOpt)
 {
-    // Wrap SemanticRequest into an IntentDocument and delegate to OrchestrateDocument
+    // Check if intent is atomic (Fast-Path)
+    if (IsAtomicIntent(request.rawIntent)) {
+        const NetDiscovery::LogicalDevice* targetDev = targetDeviceOpt;
+        if (!targetDev) {
+            auto matches = m_deviceMatcher.Match(request.targetDescription, availableDevices);
+            if (!matches.empty()) {
+                for (const auto& dev : availableDevices) {
+                    if (dev.id == matches.front().id) {
+                        targetDev = &dev;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (targetDev) {
+            ESP_LOGI(TAG, "Orchestrate: Routing atomic intent '%s' to DirectExecutionPath", request.rawIntent.c_str());
+            return DirectExecutionPath(request, *targetDev);
+        } else {
+            ESP_LOGE(TAG, "Orchestrate: Target device not found for atomic intent '%s'", request.rawIntent.c_str());
+            return SemanticError::DeviceNotFound;
+        }
+    }
+
+    // Fallback for compound macro intents: Wrap SemanticRequest into an IntentDocument and delegate to OrchestrateDocument
     NetDiscovery::compiler::IntentDocument doc;
     doc.intentId   = "legacy-" + std::to_string(esp_timer_get_time());
     doc.intentName = request.rawIntent;

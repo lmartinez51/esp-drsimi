@@ -15,6 +15,11 @@ public:
      * @return A list of candidate devices that match the text description.
      */
     std::vector<NetDiscovery::LogicalDevice> Match(const std::string& targetDescription, const std::vector<NetDiscovery::LogicalDevice>& availableDevices) const;
+
+    /**
+     * @brief Normalizes input by lowercasing, stripping non-alphanumeric characters, and collapsing whitespace.
+     */
+    static std::string StripSpecialChars(const std::string& input);
 };
 
 } // namespace semantic

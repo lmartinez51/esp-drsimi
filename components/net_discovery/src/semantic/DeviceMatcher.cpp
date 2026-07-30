@@ -16,37 +16,72 @@ static std::string ToLower(const std::string& input) {
     return result;
 }
 
-// Simple Levenshtein distance for fuzzy matching
+// Simple Levenshtein distance for fuzzy matching using zero-heap stack arrays
 static int LevenshteinDistance(const std::string& s1, const std::string& s2) {
     size_t m = s1.size();
     size_t n = s2.size();
-    std::vector<std::vector<int>> dp(m + 1, std::vector<int>(n + 1));
-    for (size_t i = 0; i <= m; i++) dp[i][0] = static_cast<int>(i);
-    for (size_t j = 0; j <= n; j++) dp[0][j] = static_cast<int>(j);
+    if (m == 0) return static_cast<int>(n);
+    if (n == 0) return static_cast<int>(m);
+    if (m > 64) m = 64;
+    if (n > 64) n = 64;
 
-    for (size_t i = 1; i <= m; i++) {
-        for (size_t j = 1; j <= n; j++) {
-            int cost = (s1[i - 1] == s2[j - 1]) ? 0 : 1;
-            dp[i][j] = std::min({dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost});
+    int v0[65];
+    int v1[65];
+    for (size_t j = 0; j <= n; j++) v0[j] = static_cast<int>(j);
+
+    for (size_t i = 0; i < m; i++) {
+        v1[0] = static_cast<int>(i + 1);
+        for (size_t j = 0; j < n; j++) {
+            int deletionCost = v0[j + 1] + 1;
+            int insertionCost = v1[j] + 1;
+            int substitutionCost = (s1[i] == s2[j]) ? v0[j] : (v0[j] + 1);
+            v1[j + 1] = std::min({deletionCost, insertionCost, substitutionCost});
+        }
+        for (size_t j = 0; j <= n; j++) v0[j] = v1[j];
+    }
+    return v0[n];
+}
+
+std::string DeviceMatcher::StripSpecialChars(const std::string& input) {
+    std::string clean;
+    clean.reserve(input.size());
+
+    bool lastWasSpace = true;
+    for (unsigned char c : input) {
+        if (std::isalnum(c)) {
+            clean.push_back(static_cast<char>(std::tolower(c)));
+            lastWasSpace = false;
+        } else {
+            if (!lastWasSpace) {
+                clean.push_back(' ');
+                lastWasSpace = true;
+            }
         }
     }
-    return dp[m][n];
+    if (!clean.empty() && clean.back() == ' ') {
+        clean.pop_back();
+    }
+    return clean;
 }
 
 std::vector<NetDiscovery::LogicalDevice> DeviceMatcher::Match(const std::string& targetDescription, const std::vector<NetDiscovery::LogicalDevice>& availableDevices) const {
     std::vector<NetDiscovery::LogicalDevice> candidates;
     std::string lowerTarget = ToLower(targetDescription);
+    std::string cleanTarget = StripSpecialChars(targetDescription);
 
     ESP_LOGI(TAG, "==================== DEVICE RESOLVER SEARCH ====================");
     ESP_LOGI(TAG, "Requested Target   : '%s'", targetDescription.c_str());
     ESP_LOGI(TAG, "Normalized Target  : '%s'", lowerTarget.c_str());
+    ESP_LOGI(TAG, "Clean Target       : '%s'", cleanTarget.c_str());
     ESP_LOGI(TAG, "Candidate Entities : %d", (int)availableDevices.size());
     ESP_LOGI(TAG, "---------------------------------------------------------------");
 
     int index = 0;
     for (const auto& device : availableDevices) {
         std::string lowerName = ToLower(device.displayName);
+        std::string cleanName = StripSpecialChars(device.displayName);
         std::string lowerManufacturer = ToLower(device.manufacturer);
+        std::string cleanManufacturer = StripSpecialChars(device.manufacturer);
         std::string lowerModel = ToLower(device.model);
 
         ESP_LOGI(TAG, "Evaluating Entity #%d:", index++);
@@ -67,10 +102,10 @@ std::vector<NetDiscovery::LogicalDevice> DeviceMatcher::Match(const std::string&
         double score = 0.0;
         std::string reason = "No match";
 
-        // Exact match
-        if (lowerTarget == lowerName) {
+        // Exact match (basic or clean)
+        if (lowerTarget == lowerName || (!cleanTarget.empty() && cleanTarget == cleanName)) {
             score = 1.0;
-            reason = "Exact Match (lowerTarget == lowerName)";
+            reason = "Exact Match";
             ESP_LOGI(TAG, "  Score Increment: +1.00 [Exact Name Match]");
             ESP_LOGI(TAG, "  TOTAL SCORE    : %.2f", score);
             ESP_LOGI(TAG, "  Decision       : ACCEPTED (%s)", reason.c_str());
@@ -80,9 +115,12 @@ std::vector<NetDiscovery::LogicalDevice> DeviceMatcher::Match(const std::string&
         }
 
         // Substring match
-        bool nameContainsTarget = (lowerName.find(lowerTarget) != std::string::npos);
-        bool targetContainsName = (lowerTarget.find(lowerName) != std::string::npos);
-        bool targetContainsMfg = (!lowerManufacturer.empty() && lowerTarget.find(lowerManufacturer) != std::string::npos);
+        bool nameContainsTarget = (lowerName.find(lowerTarget) != std::string::npos ||
+                                   (!cleanTarget.empty() && cleanName.find(cleanTarget) != std::string::npos));
+        bool targetContainsName = (lowerTarget.find(lowerName) != std::string::npos ||
+                                   (!cleanName.empty() && cleanTarget.find(cleanName) != std::string::npos));
+        bool targetContainsMfg  = (!lowerManufacturer.empty() && lowerTarget.find(lowerManufacturer) != std::string::npos) ||
+                                  (!cleanManufacturer.empty() && cleanTarget.find(cleanManufacturer) != std::string::npos);
 
         if (nameContainsTarget || targetContainsName || targetContainsMfg) {
             // Guard: Reject devices that have no capabilities and no non-rejected controllers
@@ -104,9 +142,9 @@ std::vector<NetDiscovery::LogicalDevice> DeviceMatcher::Match(const std::string&
             }
 
             score = 0.95;
-            if (nameContainsTarget) reason = "lowerName contains lowerTarget";
-            else if (targetContainsName) reason = "lowerTarget contains lowerName";
-            else if (targetContainsMfg) reason = "lowerTarget contains lowerManufacturer";
+            if (nameContainsTarget) reason = "name contains target";
+            else if (targetContainsName) reason = "target contains name";
+            else if (targetContainsMfg) reason = "target contains manufacturer";
 
             ESP_LOGI(TAG, "  Score Increment: +0.95 [Substring Match]");
             ESP_LOGI(TAG, "  TOTAL SCORE    : %.2f", score);

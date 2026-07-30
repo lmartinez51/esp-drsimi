@@ -118,6 +118,14 @@ private:
     /// Select the best controller for a device from the registry.
     NetDiscovery::IDeviceController* SelectController(
         const NetDiscovery::LogicalDevice& device) const;
+
+    /// Evaluates if an intent is atomic (fast-path) vs compound (DAG compilation path).
+    bool IsAtomicIntent(const std::string& intentName) const;
+
+    /// Fast-path execution for atomic intents bypassing AST/DAG compilation.
+    SemanticError DirectExecutionPath(
+        const SemanticRequest& request,
+        const NetDiscovery::LogicalDevice& targetDev);
 };
 
 } // namespace semantic

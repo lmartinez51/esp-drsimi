@@ -64,7 +64,8 @@ std::string FileKnowledgeStore::LoadEntityData(const std::string& networkId,
     }
 
     size_t size = (size_t)st.st_size;
-    char* safe_buf = (char*)malloc(size + 1);
+    char* safe_buf = (char*)heap_caps_malloc(size + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!safe_buf) safe_buf = (char*)malloc(size + 1);
     if (!safe_buf) {
         ESP_LOGE(TAG, "[FileKnowledgeStore] Malloc falló para buffer de lectura (%u bytes)", (unsigned)size);
         fclose(f);
@@ -101,7 +102,8 @@ std::vector<std::string> FileKnowledgeStore::LoadAllEntities(const std::string& 
                         FILE* f = fopen(fullPath.c_str(), "rb");
                         if (f) {
                             size_t size = (size_t)st.st_size;
-                            char* safe_buf = (char*)malloc(size + 1);
+                            char* safe_buf = (char*)heap_caps_malloc(size + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                            if (!safe_buf) safe_buf = (char*)malloc(size + 1);
                             if (safe_buf) {
                                 size_t read_bytes = fread(safe_buf, 1, size, f);
                                 safe_buf[read_bytes] = '\0';

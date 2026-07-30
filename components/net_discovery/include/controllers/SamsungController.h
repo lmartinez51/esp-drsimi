@@ -143,9 +143,6 @@ public:
                     if (!ep.evidence.upnp->applicationUrl.empty()) {
                         targetAppUrl = ep.evidence.upnp->applicationUrl;
                         isDiscovered = true;
-                    } else if (!ep.evidence.upnp->locationUrl.empty()) {
-                        targetAppUrl = ep.evidence.upnp->locationUrl;
-                        isDiscovered = true;
                     }
                 }
 
