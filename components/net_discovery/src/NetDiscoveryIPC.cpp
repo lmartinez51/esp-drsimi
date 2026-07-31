@@ -149,8 +149,18 @@ static void netdiscovery_ipc_listener_task(void* arg) {
                 }
             }
 
-            // ── EARLY PIPELINE BRANCH: Administrative Intents (forget_device) ──────────────
+            // ── EARLY PIPELINE BRANCH: Administrative Intents (list_devices / forget_device) ──
             // Intercept BEFORE the KnowledgeStore dump and operational media pipeline.
+            if (strcmp(msg.action, "list_devices") == 0 || strcmp(msg.action, "get_devices") == 0) {
+                ESP_LOGI(TAG, "[%u][%s] \xf0\x9f\x9b\xa0\xef\xb8\x8f [AdminPipeline] Early branch for '%s'",
+                         (unsigned)msg.request_id, msg.call_id, msg.action);
+                char response_json[512];
+                int count = g_knowledgeStore->FormatEntityListJson(response_json, sizeof(response_json));
+                ESP_LOGI(TAG, "[AdminPipeline] Formatted %d entities into device list JSON", count);
+                send_function_output(msg.call_id, response_json);
+                continue; // BYPASS operational media pipeline completely
+            }
+
             if (strcmp(msg.action, "forget_device") == 0 || strcmp(msg.action, "delete_device") == 0) {
                 ESP_LOGI(TAG, "[%u][%s] \xf0\x9f\x9b\xa0\xef\xb8\x8f [AdminPipeline] Early branch for '%s' (target: '%s')",
                          (unsigned)msg.request_id, msg.call_id, msg.action, msg.target);
@@ -741,6 +751,12 @@ extern "C" bool netdiscovery_trigger_initial_scan(void) {
 
         ControllerResolver controllerResolver(*g_controllerRegistry);
 
+        size_t prev_internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        size_t prev_largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        ESP_LOGI(TAG, "🔍 [RAM Instrumentation] Before entity processing loop: INTERNAL free=%u B, largest=%u B",
+                 (unsigned)prev_internal_free, (unsigned)prev_largest_block);
+
+        int dev_count = 0;
         for (auto& logicalDev : logicalDevices) {
             ProtocolNormalizer::Normalize(logicalDev);
             DeviceClassifier::Classify(logicalDev);
@@ -748,6 +764,15 @@ extern "C" bool netdiscovery_trigger_initial_scan(void) {
             controllerResolver.Resolve(logicalDev);
             ActionResolver::Resolve(logicalDev);
             g_knowledgeStore->UpdateFromDiscovery(logicalDev);
+
+            size_t curr_internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+            size_t curr_largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+            long free_delta = (long)prev_internal_free - (long)curr_internal_free;
+            ESP_LOGI(TAG, "📊 [RAM Instrumentation] Entity #%d ('%s'): INTERNAL free=%u B (delta=%ld B), largest=%u B",
+                     dev_count++, logicalDev.displayName.c_str(),
+                     (unsigned)curr_internal_free, free_delta, (unsigned)curr_largest_block);
+            prev_internal_free = curr_internal_free;
+            prev_largest_block = curr_largest_block;
         }
 
         ESP_LOGI(TAG, "========== DISCOVERY COMPLETION DUMP ==========");

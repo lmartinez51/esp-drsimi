@@ -1613,15 +1613,15 @@ static class_t *build_netdiscovery_control_class(void)
     static attribute_t properties[] = {
         {
             .name = "action",
-            .desc = "Action to perform on target device (e.g., 'power_on', 'power_off', 'pause', 'resume', 'mute', 'unmute', 'set_volume', 'launch_app', 'open_netflix', 'forget_device').",
+            .desc = "Action to perform on target device (e.g., 'power_on', 'power_off', 'pause', 'resume', 'mute', 'unmute', 'set_volume', 'launch_app', 'open_netflix', 'forget_device', 'list_devices').",
             .type = ATTRIBUTE_TYPE_STRING,
             .required = true,
         },
         {
             .name = "target",
-            .desc = "Target network device name, class, or entity (e.g., 'living_room_tv', 'bedroom_television', 'projector', 'smart_speaker').",
+            .desc = "Target network device name, class, or entity (e.g., 'living_room_tv', 'bedroom_television', 'projector', 'smart_speaker', 'all'). Required for control/forgetting; optional when action='list_devices'.",
             .type = ATTRIBUTE_TYPE_STRING,
-            .required = true,
+            .required = false,
         },
         {
             .name = "room",
@@ -1637,7 +1637,7 @@ static class_t *build_netdiscovery_control_class(void)
         },
     };
 
-    static char *required[] = {"action", "target"};
+    static char *required[] = {"action"};
 
     parameters_t params = {
         .type = "object",
@@ -3014,13 +3014,19 @@ static int process_json(const char *json_data, int json_size)
                 cJSON *entity_item = cJSON_GetObjectItemCaseSensitive(args_root, "entity_id");
                 cJSON *params_item = cJSON_GetObjectItemCaseSensitive(args_root, "parameters");
 
-                if (cJSON_IsString(action_item) && action_item->valuestring &&
-                    cJSON_IsString(target_item) && target_item->valuestring) {
-                    
+                const char *action_str = (cJSON_IsString(action_item) && action_item->valuestring) ? action_item->valuestring : NULL;
+                const char *target_str = (cJSON_IsString(target_item) && target_item->valuestring) ? target_item->valuestring : NULL;
+
+                if (action_str && (!target_str || target_str[0] == '\0') &&
+                    (strcmp(action_str, "list_devices") == 0 || strcmp(action_str, "get_devices") == 0)) {
+                    target_str = "all";
+                }
+
+                if (action_str && target_str) {
                     cJSON *value_item = cJSON_GetObjectItemCaseSensitive(args_root, "value");
                     ESP_LOGI(TAG, "========== NETDISCOVERY TOOL ==========");
-                    ESP_LOGI(TAG, "action      : %s", action_item->valuestring ? action_item->valuestring : "");
-                    ESP_LOGI(TAG, "target      : %s", target_item->valuestring ? target_item->valuestring : "");
+                    ESP_LOGI(TAG, "action      : %s", action_str);
+                    ESP_LOGI(TAG, "target      : %s", target_str);
                     ESP_LOGI(TAG, "room        : %s", (room_item && room_item->valuestring) ? room_item->valuestring : "");
                     ESP_LOGI(TAG, "value       : %s", (value_item && value_item->valuestring) ? value_item->valuestring : "<null>");
                     ESP_LOGI(TAG, "parameters  : %s", params_item ? "<provided>" : "<null>");
@@ -3035,8 +3041,8 @@ static int process_json(const char *json_data, int json_size)
                         strlcpy(nd_rule->call_id, call_id, sizeof(nd_rule->call_id));
                         strlcpy(nd_rule->trigger, "LUA_TOOL_NETDISCOVERY", sizeof(nd_rule->trigger));
 
-                        strlcpy(nd_rule->actions[0].target, action_item->valuestring, sizeof(nd_rule->actions[0].target));
-                        strlcpy(nd_rule->actions[1].target, target_item->valuestring, sizeof(nd_rule->actions[1].target));
+                        strlcpy(nd_rule->actions[0].target, action_str, sizeof(nd_rule->actions[0].target));
+                        strlcpy(nd_rule->actions[1].target, target_str, sizeof(nd_rule->actions[1].target));
                         if (cJSON_IsString(room_item) && room_item->valuestring) {
                             strlcpy(nd_rule->actions[2].target, room_item->valuestring, sizeof(nd_rule->actions[2].target));
                         }
@@ -3099,7 +3105,7 @@ static int process_json(const char *json_data, int json_size)
                             send_function_output(call_id, "{\"error\": \"System Busy\"}");
                         } else {
                             ESP_LOGI(TAG, "[0][%s] NetDiscovery rule queued for ESP-Claw (action: %s, target: %s)",
-                                     call_id, action_item->valuestring, target_item->valuestring);
+                                     call_id, action_str, target_str);
                         }
                     } else {
                         send_function_output(call_id, "{\"error\": \"Out of memory allocating NetDiscovery rule\"}");

@@ -71,6 +71,15 @@ public:
     int FindEntityForAdmin(const char* targetLower, std::string& outId, std::string& outDisplay) const;
 
     /**
+     * @brief Formats all loaded network entities into a lightweight JSON array in-place.
+     *        Zero-copy on entity structures, suitable for stack buffers in AdminPipeline.
+     * @param buf Target output buffer.
+     * @param bufSize Maximum size of output buffer.
+     * @return Number of entities formatted into JSON array.
+     */
+    int FormatEntityListJson(char* buf, size_t bufSize) const;
+
+    /**
      * @brief Mark an entity for update with new credentials.
      */
     void UpdateCredentials(const std::string& deviceId, const std::string& key, const std::string& value);

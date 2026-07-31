@@ -30,6 +30,7 @@ void ControllerResolver::Resolve(LogicalDevice& device) const {
         if (!controller->IsMatch(device)) {
             candidate.isRejected = true;
             candidate.diagnosticReason = "Failed IsMatch (Mandatory Requirements)";
+            candidate.scoreBreakdown.clear();
             device.controllerCandidates.push_back(candidate);
             continue; // Rejected immediately
         }

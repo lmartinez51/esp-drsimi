@@ -153,11 +153,13 @@ You can control various device features simply by talking to Dr. Simi. Here are 
   - *"Doctor, ¿qué dispositivos infrarrojos tienes registrados?"* (Context: "Doc, what IR devices do you have registered?")
   - **Action**: Triggers `ir_transmit_command`, `ir_learn_button`, `ir_delete_device`, or `ir_get_devices`.
 - **Control Smart Devices (NetDiscovery / DIAL)**:
+  - *"Doctor, ¿qué dispositivos hay en la red?"* (Context: "Doc, what devices are on the network?")
+  - *"Doctor, dame la lista de equipos Wi-Fi guardados."* (Context: "Doc, give me the list of saved Wi-Fi devices.")
   - *"Doctor, ponle pausa a la tele de la sala."* (Context: "Doc, pause the living room TV.")
   - *"Doctor, abre Netflix en el proyector."* (Context: "Doc, open Netflix on the projector.")
   - *"Doctor, borra la TV de la recámara."* (Context: "Doc, remove/forget the bedroom TV.")
   - *"Doctor, borra el router ZTE de los dispositivos."* (Context: "Doc, forget the ZTE router.")
-  - **Action**: Triggers `netdiscovery_control` (with operational actions like `pause`, `launch_app`, or administrative actions like `forget_device`/`delete_device` to safely purge entities from RAM and LittleFS storage).
+  - **Action**: Triggers `netdiscovery_control` (supporting `list_devices` to query saved network entities in-place, operational actions like `pause`/`launch_app`, and administrative actions like `forget_device`/`delete_device`).
 
 ---
 

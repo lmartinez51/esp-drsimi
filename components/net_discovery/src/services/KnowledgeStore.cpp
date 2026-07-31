@@ -646,4 +646,46 @@ int KnowledgeStore::FindEntityForAdmin(const char* targetLower, std::string& out
     return matchCount;
 }
 
+int KnowledgeStore::FormatEntityListJson(char* buf, size_t bufSize) const {
+    if (!buf || bufSize == 0) return 0;
+
+    int written = snprintf(buf, bufSize, "{\"status\":\"success\",\"devices\":[");
+    if (written < 0 || (size_t)written >= bufSize) {
+        snprintf(buf, bufSize, "{\"status\":\"error\",\"message\":\"Buffer overflow\"}");
+        return 0;
+    }
+
+    size_t offset = written;
+    int count = 0;
+
+    for (const auto& kv : m_entities) {
+        const auto& entity = kv.second;
+        const char* name   = entity.displayName.empty() ? "Unknown" : entity.displayName.c_str();
+        const char* vendor = entity.identity.vendor.empty() ? "Unknown" : entity.identity.vendor.c_str();
+        const char* model  = entity.identity.model.empty() ? "Unknown" : entity.identity.model.c_str();
+        const char* ip     = "0.0.0.0";
+        for (const auto& ep : entity.endpoints) {
+            if (!ep.ip.empty()) {
+                ip = ep.ip.c_str();
+                break;
+            }
+        }
+
+        int n = snprintf(buf + offset, bufSize - offset,
+                         "%s{\"name\":\"%s\",\"vendor\":\"%s\",\"model\":\"%s\",\"ip\":\"%s\"}",
+                         (count > 0 ? "," : ""),
+                         name, vendor, model, ip);
+
+        if (n < 0 || (size_t)n >= (bufSize - offset)) {
+            // Buffer full: stop appending devices safely
+            break;
+        }
+        offset += n;
+        count++;
+    }
+
+    snprintf(buf + offset, bufSize - offset, "]}");
+    return count;
+}
+
 } // namespace NetDiscovery

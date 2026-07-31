@@ -105,7 +105,7 @@ std::optional<HttpResponse> HttpClient::SendRequest(const std::string& method, c
         }
 
         std::string buffer;
-        const size_t CHUNK_SIZE = 4096;
+        const size_t CHUNK_SIZE = 2048;
         char* raw_chunk = static_cast<char*>(heap_caps_malloc(CHUNK_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         if (!raw_chunk) raw_chunk = static_cast<char*>(malloc(CHUNK_SIZE));
         std::unique_ptr<char[], void(*)(void*)> chunk_ptr(raw_chunk, [](void* p){ free(p); });
