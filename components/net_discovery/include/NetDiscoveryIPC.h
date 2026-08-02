@@ -82,6 +82,9 @@ void netdiscovery_cancel_store_write(const char* path);
 // (caller must NOT arm the scan timeout timer in that case).
 bool netdiscovery_trigger_initial_scan(void);
 
+// Resolves device IP, service port, and reachability trust with fuzzy matching and dynamic port extraction
+bool netdiscovery_get_entity_endpoint(const char* target_name, char* out_ip, size_t ip_len, uint32_t* out_port, bool* out_trusted);
+
 // Strategic hook reserved for future cancellation by request_id
 bool netdiscovery_cancel_request(uint32_t request_id);
 

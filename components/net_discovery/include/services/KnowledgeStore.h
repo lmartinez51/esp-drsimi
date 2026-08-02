@@ -43,6 +43,12 @@ public:
     void UpdateFromDiscovery(const LogicalDevice& liveDevice);
 
     /**
+     * @brief Post-discovery active consolidation: merges any remaining duplicate entities
+     *        sharing the same IP/MAC in memory and purges redundant LittleFS files.
+     */
+    void Consolidate();
+
+    /**
      * @brief Marks an entity as archived (replaces destructive Forget).
      */
     void ArchiveEntity(const std::string& entityId);

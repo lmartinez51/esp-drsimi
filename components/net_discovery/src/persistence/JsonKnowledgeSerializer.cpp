@@ -155,14 +155,6 @@ std::string JsonKnowledgeSerializer::Serialize(const KnowledgeEntity& entity) {
     cJSON_AddBoolToObject(lc, "user_deleted", entity.lifecycle.userDeleted);
     cJSON_AddNumberToObject(lc, "confidence_score", entity.lifecycle.confidenceScore);
     cJSON_AddNumberToObject(lc, "revision", entity.lifecycle.revision);
-    cJSON_AddNumberToObject(lc, "created_at", (double)entity.lifecycle.createdAt);
-    cJSON_AddNumberToObject(lc, "last_seen", (double)entity.lifecycle.lastSeen);
-    cJSON_AddNumberToObject(lc, "last_success", (double)entity.lifecycle.lastSuccess);
-    cJSON_AddNumberToObject(lc, "last_modified", (double)entity.lifecycle.lastModified);
-    cJSON_AddNumberToObject(lc, "archived_at", (double)entity.lifecycle.archivedAt);
-    cJSON_AddNumberToObject(lc, "times_seen", entity.lifecycle.timesSeen);
-    cJSON_AddNumberToObject(lc, "times_used", entity.lifecycle.timesUsed);
-    cJSON_AddNumberToObject(lc, "times_failed", entity.lifecycle.timesFailed);
 
     cJSON_AddItemToObject(root, "lifecycle", lc);
 

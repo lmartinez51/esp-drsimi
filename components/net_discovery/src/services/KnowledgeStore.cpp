@@ -48,6 +48,12 @@ void KnowledgeStore::ResolveKnownNetwork(const NetworkFingerprint& network) {
 void KnowledgeStore::UpdateFromDiscovery(const LogicalDevice& liveDevice) {
     auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
+    // Ghost Guard: Reject completely empty discovery updates with no identity metadata
+    if (liveDevice.displayName.empty() && liveDevice.manufacturer.empty() && liveDevice.model.empty() && liveDevice.endpoints.empty()) {
+        ESP_LOGW(TAG, "[KnowledgeStore] Ghost Guard: Rejecting empty discovery update (no name, vendor, model, or endpoints).");
+        return;
+    }
+
     std::string entityId = liveDevice.id;
     if (entityId.empty()) {
         if (!liveDevice.endpoints.empty() && !liveDevice.endpoints[0].uuid.empty()) {
@@ -72,19 +78,21 @@ void KnowledgeStore::UpdateFromDiscovery(const LogicalDevice& liveDevice) {
         }
     }
 
-    // IP-based deduplication: if a new UUID arrives for an IP we already track,
-    // redirect to the canonical entity instead of creating a duplicate entry.
-    if (m_entities.find(entityId) == m_entities.end()) {
-        if (!liveDevice.endpoints.empty() && !liveDevice.endpoints[0].ip.empty()) {
-            const std::string& liveIp = liveDevice.endpoints[0].ip;
-            for (const auto& kv : m_entities) {
-                for (const auto& ep : kv.second.endpoints) {
-                    if (!ep.ip.empty() && ep.ip == liveIp) {
-                        ESP_LOGI(TAG, "[KnowledgeStore] IP-dedup: redirecting new ID '%s' -> canonical '%s' (shared IP: %s)",
-                                 entityId.c_str(), kv.first.c_str(), liveIp.c_str());
-                        entityId = kv.first; // merge into canonical
-                        goto ip_dedup_done;
+    // Unconditional IP-based deduplication: check if any existing entity already owns this IP.
+    if (!liveDevice.endpoints.empty() && !liveDevice.endpoints[0].ip.empty()) {
+        const std::string& liveIp = liveDevice.endpoints[0].ip;
+        for (const auto& kv : m_entities) {
+            if (kv.first == entityId) continue; // skip self
+            for (const auto& ep : kv.second.endpoints) {
+                if (!ep.ip.empty() && ep.ip == liveIp) {
+                    ESP_LOGI(TAG, "[KnowledgeStore] IP-dedup: redirecting ID '%s' -> canonical '%s' (shared IP: %s)",
+                             entityId.c_str(), kv.first.c_str(), liveIp.c_str());
+                    std::string oldId = entityId;
+                    entityId = kv.first; // merge into canonical
+                    if (oldId != entityId && m_entities.find(oldId) != m_entities.end()) {
+                        m_entities.erase(oldId);
                     }
+                    goto ip_dedup_done;
                 }
             }
         }
@@ -147,6 +155,14 @@ void KnowledgeStore::UpdateFromDiscovery(const LogicalDevice& liveDevice) {
     }
 
     PersistEntity(m_entities[entityId]);
+    Consolidate();
+}
+
+void KnowledgeStore::Consolidate() {
+    std::string networkId = GetCurrentNetworkId();
+    if (m_entities.size() > 1) {
+        ConsolidateDuplicates(networkId);
+    }
 }
 
 void KnowledgeStore::UpdateCredentials(const std::string& deviceId, const std::string& key, const std::string& value) {

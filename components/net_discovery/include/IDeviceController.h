@@ -17,6 +17,14 @@
 namespace NetDiscovery {
 
 /**
+ * @brief Trust level for "network reachability implies power state" heuristic.
+ */
+enum class PowerStateReachabilityTrust {
+    Unconfirmed = 0,
+    Confirmed = 1
+};
+
+/**
  * @brief Metadata-only controller interface for Phase 3.
  *
  * Exposes what a controller can do, and evaluates if it can
@@ -25,6 +33,14 @@ namespace NetDiscovery {
 class IDeviceController {
 public:
     virtual ~IDeviceController() = default;
+
+    /**
+     * @brief Trust level for reachability-based power state heuristics.
+     * Defaults to Unconfirmed until explicitly verified for a manufacturer.
+     */
+    virtual PowerStateReachabilityTrust ReachabilityTrust() const {
+        return PowerStateReachabilityTrust::Unconfirmed;
+    }
 
     /**
      * @brief The name of the controller.

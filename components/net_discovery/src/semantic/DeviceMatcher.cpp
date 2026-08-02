@@ -114,11 +114,31 @@ std::vector<NetDiscovery::LogicalDevice> DeviceMatcher::Match(const std::string&
             continue;
         }
 
-        // Substring match
+        // Room synonym normalization for English/Spanish compatibility
+        std::string synTarget = lowerTarget;
+        auto replace_all = [&](const std::string& from, const std::string& to) {
+            size_t start_pos = 0;
+            while ((start_pos = synTarget.find(from, start_pos)) != std::string::npos) {
+                synTarget.replace(start_pos, from.length(), to);
+                start_pos += to.length();
+            }
+        };
+        replace_all("recamara", "bed room");
+        replace_all("recámara", "bed room");
+        replace_all("cuarto", "bed room");
+        replace_all("habitacion", "bed room");
+        replace_all("habitación", "bed room");
+        replace_all("sala", "living room");
+        std::string synCleanTarget = StripSpecialChars(synTarget);
+
+        // Substring & Synonym match
         bool nameContainsTarget = (lowerName.find(lowerTarget) != std::string::npos ||
-                                   (!cleanTarget.empty() && cleanName.find(cleanTarget) != std::string::npos));
+                                   (!cleanTarget.empty() && cleanName.find(cleanTarget) != std::string::npos) ||
+                                   (!synCleanTarget.empty() && cleanName.find(synCleanTarget) != std::string::npos) ||
+                                   (!synCleanTarget.empty() && synCleanTarget.find(cleanName) != std::string::npos));
         bool targetContainsName = (lowerTarget.find(lowerName) != std::string::npos ||
-                                   (!cleanName.empty() && cleanTarget.find(cleanName) != std::string::npos));
+                                   (!cleanName.empty() && cleanTarget.find(cleanName) != std::string::npos) ||
+                                   (!cleanName.empty() && synCleanTarget.find(cleanName) != std::string::npos));
         bool targetContainsMfg  = (!lowerManufacturer.empty() && lowerTarget.find(lowerManufacturer) != std::string::npos) ||
                                   (!cleanManufacturer.empty() && cleanTarget.find(cleanManufacturer) != std::string::npos);
 
@@ -142,11 +162,11 @@ std::vector<NetDiscovery::LogicalDevice> DeviceMatcher::Match(const std::string&
             }
 
             score = 0.95;
-            if (nameContainsTarget) reason = "name contains target";
+            if (nameContainsTarget) reason = "name contains target / synonym";
             else if (targetContainsName) reason = "target contains name";
             else if (targetContainsMfg) reason = "target contains manufacturer";
 
-            ESP_LOGI(TAG, "  Score Increment: +0.95 [Substring Match]");
+            ESP_LOGI(TAG, "  Score Increment: +0.95 [Substring / Synonym Match]");
             ESP_LOGI(TAG, "  TOTAL SCORE    : %.2f", score);
             ESP_LOGI(TAG, "  Decision       : ACCEPTED (%s)", reason.c_str());
             ESP_LOGI(TAG, "---------------------------------------------------------------");
@@ -155,7 +175,7 @@ std::vector<NetDiscovery::LogicalDevice> DeviceMatcher::Match(const std::string&
         }
 
         // Fuzzy match
-        int dist = LevenshteinDistance(lowerTarget, lowerName);
+        int dist = LevenshteinDistance(synTarget, lowerName);
         if (dist <= 3) {
             score = 0.70 - (dist * 0.10);
             reason = "Fuzzy match distance " + std::to_string(dist);
@@ -168,6 +188,23 @@ std::vector<NetDiscovery::LogicalDevice> DeviceMatcher::Match(const std::string&
             ESP_LOGI(TAG, "  TOTAL SCORE    : 0.00");
             ESP_LOGI(TAG, "  Decision       : REJECTED (No match criteria satisfied)");
             ESP_LOGI(TAG, "---------------------------------------------------------------");
+        }
+    }
+
+    // Fallback: If no candidate matched by name, but target asks for a TV/tele, pick first SmartTV
+    if (candidates.empty()) {
+        bool asksForTV = (lowerTarget.find("tv") != std::string::npos ||
+                          lowerTarget.find("tele") != std::string::npos ||
+                          lowerTarget.find("television") != std::string::npos);
+        if (asksForTV) {
+            for (const auto& device : availableDevices) {
+                if (device.primaryClass == NetDiscovery::PrimaryDeviceClass::SmartTV) {
+                    ESP_LOGI(TAG, "  Fallback Match : ACCEPTED SmartTV '%s' for TV target '%s'",
+                             device.displayName.c_str(), targetDescription.c_str());
+                    candidates.push_back(device);
+                    break;
+                }
+            }
         }
     }
 

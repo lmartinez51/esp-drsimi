@@ -290,6 +290,14 @@ std::vector<LogicalDevice> DeviceFusionEngine::Fuse(const std::vector<IdentityEv
                 if (!baseDev.displayName.empty() && baseDev.displayName == logicalDev.displayName) {
                     fusionScore += policy.sameFriendlyNameMatch + 30;
                 }
+                // Universal Rule: In a local network, a shared IP address represents a single physical node.
+                // If either baseDev or logicalDev is a skeletal candidate, force fusion.
+                auto isSkeletal = [](const LogicalDevice& dev) {
+                    return dev.displayName.empty() || dev.manufacturer.empty() || dev.model.empty() || dev.displayName == dev.id;
+                };
+                if (isSkeletal(baseDev) || isSkeletal(logicalDev)) {
+                    fusionScore += policy.fusionThreshold;
+                }
             }
 
             // 6. Friendly Name Match

@@ -24,6 +24,11 @@
 #include "webrtc.h"
 #include "NetDiscoveryIPC.h"
 #include "../../../components/net_discovery/include/NetDiscoveryMetrics.h"
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <sys/select.h>
 
 static const char *TAG = "ESP_CLAW_ISO";
 static QueueHandle_t s_test_queue = NULL;
@@ -198,6 +203,92 @@ static int l_inject_webrtc_message(lua_State *L) {
         }
     }
     return 0;
+}
+
+static bool is_tcp_port_open(const char *ip_str, uint16_t port, uint32_t timeout_ms) {
+    if (!ip_str || port == 0) return false;
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, ip_str, &addr.sin_addr) <= 0) {
+        close(fd);
+        return false;
+    }
+
+    int res = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+    if (res == 0) {
+        close(fd);
+        return true;
+    }
+
+    if (errno != EINPROGRESS && errno != EWOULDBLOCK) {
+        close(fd);
+        return false;
+    }
+
+    fd_set writefds;
+    FD_ZERO(&writefds);
+    FD_SET(fd, &writefds);
+
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+    res = select(fd + 1, NULL, &writefds, NULL, &tv);
+    if (res > 0 && FD_ISSET(fd, &writefds)) {
+        int err = 0;
+        socklen_t len = sizeof(err);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0) {
+            close(fd);
+            return true;
+        }
+    }
+
+    close(fd);
+    return false;
+}
+
+static int l_is_endpoint_ready(lua_State *L) {
+    const char *ip = luaL_checkstring(L, 1);
+    int port = luaL_checkinteger(L, 2);
+    int timeout_ms = 300;
+    if (lua_gettop(L) >= 3 && !lua_isnil(L, 3)) {
+        timeout_ms = lua_tointeger(L, 3);
+    }
+    bool ready = is_tcp_port_open(ip, (uint16_t)port, (uint32_t)timeout_ms);
+    ESP_LOGI(TAG, "[REACHABILITY PROBE] ip=%s port=%d result=%s",
+             ip, port, ready ? "READY" : "UNREACHABLE");
+    lua_pushboolean(L, ready);
+    return 1;
+}
+
+static int l_get_entity_endpoint(lua_State *L) {
+    const char *target = luaL_checkstring(L, 1);
+    char ip[64] = {0};
+    uint32_t port = 8080;
+    bool is_trusted = false;
+    bool found = netdiscovery_get_entity_endpoint(target, ip, sizeof(ip), &port, &is_trusted);
+    if (found) {
+        lua_pushstring(L, ip);
+        lua_pushinteger(L, (lua_Integer)port);
+        lua_pushboolean(L, is_trusted);
+        return 3;
+    } else {
+        lua_pushnil(L);
+        lua_pushnil(L);
+        lua_pushboolean(L, false);
+        return 3;
+    }
 }
 
 // RESTAURADO: Hooks originales para mandar el JSON a PSRAM y salvar la RAM interna
@@ -448,6 +539,8 @@ static void lua_worker_task(void *arg) {
     lua_register(L, "c_inject_webrtc_message", l_inject_webrtc_message);
     lua_register(L, "c_save_rules", l_save_rules_to_fs);
     lua_register(L, "c_send_intent", l_send_intent);
+    lua_register(L, "c_is_endpoint_ready", l_is_endpoint_ready);
+    lua_register(L, "c_get_entity_endpoint", l_get_entity_endpoint);
 
     ESP_LOGI(TAG, "Registering IR bindings safely");
     luaL_requiref(L, "ir", luaopen_ir, 1);

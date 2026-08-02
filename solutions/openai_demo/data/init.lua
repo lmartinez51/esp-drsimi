@@ -109,6 +109,133 @@ function ir.save_db()
 end
 
 -- -----------------------------------------------------------------------------
+-- 2b. Flexible Token & Synonym IR Device Normalization & Matcher
+-- -----------------------------------------------------------------------------
+local function normalize_text(str)
+    if not str or str == "" then return "" end
+
+    -- Convert to lowercase
+    str = string.lower(str)
+
+    -- Separate CamelCase (e.g. "tvRecamara" -> "tv Recamara")
+    str = str:gsub("(%l)(%u)", "%1 %2")
+    str = string.lower(str)
+
+    -- Strip diacritics / accents in Spanish UTF-8
+    local accents = {
+        ["á"] = "a", ["é"] = "e", ["í"] = "i", ["ó"] = "o", ["ú"] = "u",
+        ["ü"] = "u", ["ñ"] = "n",
+        ["Á"] = "a", ["É"] = "e", ["Í"] = "i", ["Ó"] = "o", ["Ú"] = "u",
+        ["Ü"] = "u", ["Ñ"] = "n"
+    }
+    for k, v in pairs(accents) do
+        str = str:gsub(k, v)
+    end
+
+    -- Replace punctuation and underscores with spaces
+    str = str:gsub("[%c%p]", " ")
+
+    -- Tokenize and apply synonyms & stop words
+    local tokens = {}
+    local stop_words = {
+        ["de"] = true, ["la"] = true, ["el"] = true, ["del"] = true,
+        ["los"] = true, ["las"] = true, ["un"] = true, ["una"] = true
+    }
+    local synonyms = {
+        ["television"] = "tv",
+        ["tele"] = "tv",
+        ["cuarto"] = "recamara",
+        ["habitacion"] = "recamara",
+        ["dormitorio"] = "recamara"
+    }
+
+    for word in str:gmatch("%S+") do
+        local norm_w = synonyms[word] or word
+        if not stop_words[norm_w] then
+            table.insert(tokens, norm_w)
+        end
+    end
+
+    return table.concat(tokens, " ")
+end
+
+local function find_ir_device(query_target)
+    if not ir_db or not query_target or query_target == "" then
+        return nil, nil
+    end
+
+    -- Fast-path: Direct key lookup
+    if ir_db[query_target] then
+        return query_target, ir_db[query_target]
+    end
+
+    local norm_query = normalize_text(query_target)
+    if norm_query == "" then
+        return nil, nil
+    end
+
+    -- Extract query tokens
+    local query_tokens = {}
+    local query_token_count = 0
+    for token in norm_query:gmatch("%S+") do
+        query_tokens[token] = true
+        query_token_count = query_token_count + 1
+    end
+
+    local best_match_dev = nil
+    local best_match_buttons = nil
+    local best_score = 0
+
+    for dev_name, buttons in pairs(ir_db) do
+        local norm_key = normalize_text(dev_name)
+
+        -- 1. Direct Normalized Match
+        if norm_key == norm_query then
+            return dev_name, buttons
+        end
+
+        -- 2. Substring / Containment Match
+        if #norm_key > 0 and #norm_query > 0 and
+           (string.find(norm_key, norm_query, 1, true) or string.find(norm_query, norm_key, 1, true)) then
+            if best_score < 2 then
+                best_score = 2
+                best_match_dev = dev_name
+                best_match_buttons = buttons
+            end
+        end
+
+        -- 3. Token Overlap Match
+        if best_score < 2 then
+            local key_tokens = {}
+            local matched_count = 0
+            local key_token_count = 0
+            for token in norm_key:gmatch("%S+") do
+                key_tokens[token] = true
+                key_token_count = key_token_count + 1
+                if query_tokens[token] then
+                    matched_count = matched_count + 1
+                end
+            end
+
+            if query_token_count > 0 and (matched_count == query_token_count or matched_count == key_token_count) then
+                if best_score < 1 then
+                    best_score = 1
+                    best_match_dev = dev_name
+                    best_match_buttons = buttons
+                end
+            end
+        end
+    end
+
+    if best_match_dev then
+        print("[IR_LOOKUP] Coincidencia difusa en ir_db para '" .. query_target .. "' -> '" .. best_match_dev .. "'")
+        return best_match_dev, best_match_buttons
+    end
+
+    return nil, nil
+end
+
+-- -----------------------------------------------------------------------------
 -- 3. Rules DB Initialization
 -- -----------------------------------------------------------------------------
 rules_db = rules_db or {}
@@ -278,17 +405,18 @@ function register_rule(rule)
         if rule.actions and rule.actions[1] and rule.actions[2] then
             local device = rule.actions[1]
             local button = rule.actions[2]
-            if not ir_db[device] or not ir_db[device][button] then
+            local matched_dev, buttons = find_ir_device(device)
+            if not buttons or not buttons[button] then
                 if c_send_webrtc_response then
                     c_send_webrtc_response(rule.call_id,
-                        "Error: Device '" .. device .. "' or button '" .. button ..
+                        "Error: Device '" .. tostring(device) .. "' or button '" .. tostring(button) ..
                         "' not found in the database.")
                 end
             else
                 if ir.send then
                     -- ir.send() C-binding calls strtoul(hex_str, NULL, 16).
                     -- Passing the "0x%08X" string directly is correct and safe.
-                    ir.send(ir_db[device][button])
+                    ir.send(buttons[button])
                     if c_send_webrtc_response then
                         c_send_webrtc_response(rule.call_id, "Success: IR code transmitted.")
                     end
@@ -337,42 +465,43 @@ function register_rule(rule)
         end
 
         -- Guard: device must exist in DB
-        if not ir_db or not ir_db[device] then
+        local matched_dev, buttons = find_ir_device(device)
+        if not matched_dev then
             if c_send_webrtc_response then
                 c_send_webrtc_response(rule.call_id,
-                    "Error: Device '" .. device .. "' not found in the database.")
+                    "Error: Device '" .. tostring(device) .. "' not found in the database.")
             end
             return
         end
 
         if button and button ~= "" then
             -- Button-level deletion
-            if not ir_db[device][button] then
+            if not ir_db[matched_dev][button] then
                 if c_send_webrtc_response then
                     c_send_webrtc_response(rule.call_id,
-                        "Error: Button '" .. button .. "' not found on device '" .. device .. "'.")
+                        "Error: Button '" .. button .. "' not found on device '" .. matched_dev .. "'.")
                 end
                 return
             end
 
-            ir_db[device][button] = nil
+            ir_db[matched_dev][button] = nil
 
             -- Garbage-collect the device table if it is now empty
-            if next(ir_db[device]) == nil then
-                ir_db[device] = nil
-                print("GC: removed empty device '" .. device .. "' from ir_db.")
+            if next(ir_db[matched_dev]) == nil then
+                ir_db[matched_dev] = nil
+                print("GC: removed empty device '" .. matched_dev .. "' from ir_db.")
             end
 
             if c_send_webrtc_response then
                 c_send_webrtc_response(rule.call_id,
-                    "Button '" .. button .. "' deleted from device '" .. device .. "'.")
+                    "Button '" .. button .. "' deleted from device '" .. matched_dev .. "'.")
             end
         else
             -- Device-level deletion (all buttons removed)
-            ir_db[device] = nil
+            ir_db[matched_dev] = nil
             if c_send_webrtc_response then
                 c_send_webrtc_response(rule.call_id,
-                    "Device '" .. device .. "' and all its buttons have been deleted.")
+                    "Device '" .. matched_dev .. "' and all its buttons have been deleted.")
             end
         end
 
@@ -442,7 +571,7 @@ function register_rule(rule)
         return
 
     -- -------------------------------------------------------------------------
-    -- LLM Tool: NetDiscovery Action Execution
+    -- LLM Tool: NetDiscovery Action Execution (Smart Macro & Dynamic Probe)
     -- -------------------------------------------------------------------------
     elseif trigger == "LUA_TOOL_NETDISCOVERY" then
         local action = (rule.actions and rule.actions[1]) or ""
@@ -460,14 +589,166 @@ function register_rule(rule)
             return
         end
 
-        if c_send_intent then
-            print("[LUA_BRIDGE] Calling c_send_intent with parameters_json: " .. parameters_json)
-            c_send_intent(rule.call_id, action, target, room, entity_id, parameters_json)
-        else
+        if not c_send_intent then
             if c_send_webrtc_response then
                 c_send_webrtc_response(rule.call_id, '{"error": "c_send_intent C-binding not found"}')
             end
+            return
         end
+
+        -- Unwrap double-nested WebRTC JSON parameters if present (e.g. {"name":"{...}","value":"{...}"})
+        local function unwrap_parameters_json(json_str)
+            if not json_str or json_str == "" or json_str == "{}" then return json_str end
+            local inner_val = json_str:match('^%s*{%s*"name"%s*:%s*".-"%s*,%s*"value"%s*:%s*"(.-)"%s*}%s*$')
+            if inner_val then
+                return inner_val:gsub('\\"', '"'):gsub('\\\\', '\\')
+            end
+            return json_str
+        end
+
+        parameters_json = unwrap_parameters_json(parameters_json)
+
+        -- Check if power_on_first is requested or if action is launch_app/open_app
+        local power_requested = (string.find(parameters_json or "", '"power_on_first"%s*:%s*true') ~= nil) or
+                                (action == "launch_app" or action == "open_app")
+
+        -- 1. Resolve IP, service port, and manufacturer reachability trust status
+        local ip, port, is_trusted = nil, 8080, false
+        if c_get_entity_endpoint then
+            ip, port, is_trusted = c_get_entity_endpoint(target)
+        end
+        if not port or type(port) ~= "number" or port <= 0 or port > 65535 then
+            port = 8080
+        end
+
+        -- Helper: Bounded reachability probe loop with accurate elapsed time bookkeeping
+        local function probe_reachability(target_ip, target_port, max_wait_ms, poll_interval_ms, probe_timeout_ms)
+            if not target_ip or target_ip == "" or not target_port or target_port <= 0 then
+                return false, 0
+            end
+            max_wait_ms = max_wait_ms or 5000
+            poll_interval_ms = poll_interval_ms or 500
+            probe_timeout_ms = probe_timeout_ms or 300
+
+            local elapsed = 0
+            while elapsed < max_wait_ms do
+                if c_is_endpoint_ready and c_is_endpoint_ready(target_ip, target_port, probe_timeout_ms) then
+                    return true, elapsed
+                end
+                c_sys_delay(poll_interval_ms)
+                elapsed = elapsed + probe_timeout_ms + poll_interval_ms
+            end
+            return false, elapsed
+        end
+
+        -- ---------------------------------------------------------------------
+        -- Special Handling: ATOMIC POWER_OFF
+        -- ---------------------------------------------------------------------
+        if action == "power_off" then
+            print("[MACRO_PROBE] Processing power_off for target '" .. target .. "' (trust=" .. tostring(is_trusted) .. ")")
+
+            local is_ready = false
+            if ip and ip ~= "" and port and port > 0 then
+                print("[MACRO_PROBE] Sondeando alcanzabilidad para power_off en " .. ip .. ":" .. tostring(port) .. " (Window: 5000ms)...")
+                is_ready = probe_reachability(ip, port, 5000, 500, 300)
+            end
+
+            if is_trusted then
+                -- CONFIRMED Manufacturer: Trust reachability state after full retry window
+                if not is_ready then
+                    print("[MACRO_PROBE] CONFIRMED: Device is consistently unreachable over network (5000ms window). Dispositivo ya está apagado.")
+                    if c_send_webrtc_response then
+                        c_send_webrtc_response(rule.call_id, '{"status": "info", "message": "El dispositivo ya se encuentra apagado."}')
+                    end
+                    return
+                else
+                    print("[MACRO_PROBE] CONFIRMED: Dispositivo alcanzable por red. Procediendo a apagar por IR.")
+                end
+            else
+                -- UNCONFIRMED Manufacturer: Do NOT assert "ya está apagada" or skip IR based on reachability alone
+                if not is_ready then
+                    print("[MACRO_PROBE] UNCONFIRMED: Dispositivo inalcanzable por red. Estado no confirmado únicamente por red. Procediendo con señal IR.")
+                else
+                    print("[MACRO_PROBE] UNCONFIRMED: Dispositivo alcanzable por red. Procediendo con señal IR de apagado.")
+                end
+            end
+
+            -- Helper to find IR power code via token/synonym matcher
+            local power_code = nil
+            local matched_dev, buttons = find_ir_device(target)
+            if buttons and buttons["power"] then
+                power_code = buttons["power"]
+                print("[MACRO_PROBE] Código IR 'power' resuelto para '" .. target .. "' -> '" .. tostring(matched_dev) .. "' (" .. power_code .. ")")
+            end
+
+            if power_code and ir.send then
+                ir.send(power_code)
+                print("[MACRO_PROBE] Código IR enviado (" .. power_code .. ") a " .. target)
+                if c_send_webrtc_response then
+                    if not is_trusted then
+                        c_send_webrtc_response(rule.call_id, '{"status": "hedged", "message": "No pude confirmar el estado exacto por red, pero envié la señal de apagado por infrarrojo."}')
+                    else
+                        c_send_webrtc_response(rule.call_id, '{"status": "success", "message": "Señal de apagado enviada correctamente."}')
+                    end
+                end
+            else
+                print("[MACRO_PROBE] AVISO: No se encontró código IR 'power' para " .. target .. " en ir_db.")
+                if c_send_webrtc_response then
+                    c_send_webrtc_response(rule.call_id, '{"status": "error", "message": "No se encontró un código IR registrado para apagar el dispositivo."}')
+                end
+            end
+            return
+        end
+
+        -- Check if power_on_first is requested or if action is launch_app/open_app
+        local power_requested = (string.find(parameters_json or "", '"power_on_first"%s*:%s*true') ~= nil) or
+                                (action == "launch_app" or action == "open_app")
+
+        if power_requested then
+            -- 2. FAST INITIAL PROBE: Skip IR power ONLY if manufacturer reachability trust is CONFIRMED
+            if is_trusted and ip and ip ~= "" and port and port > 0 then
+                print("[MACRO_PROBE] Fast Probe previo (CONFIRMED) en " .. ip .. ":" .. tostring(port))
+                if c_is_endpoint_ready and c_is_endpoint_ready(ip, port, 300) then
+                    print("[MACRO_PROBE] HOT PATH (CONFIRMED): TV ya encendida y alcanzable en red. OMITIENDO SEÑAL IR POWER.")
+                    c_send_intent(rule.call_id, action, target, room, entity_id, parameters_json)
+                    return
+                end
+            elseif not is_trusted then
+                print("[MACRO_PROBE] REACHABILITY UNCONFIRMED para '" .. target .. "'. Transmitiendo IR power por seguridad...")
+            end
+
+            -- 3. COLD PATH / UNCONFIRMED: Transmit IR power code.
+            print("[MACRO_PROBE] Transmitiendo comando IR Power...")
+            local power_code = nil
+            local matched_dev, buttons = find_ir_device(target)
+            if buttons and buttons["power"] then
+                power_code = buttons["power"]
+                print("[MACRO_PROBE] Código IR 'power' resuelto para '" .. target .. "' -> '" .. tostring(matched_dev) .. "' (" .. power_code .. ")")
+            end
+
+            if power_code and ir.send then
+                ir.send(power_code)
+                print("[MACRO_PROBE] Código IR enviado (" .. power_code .. ") a " .. target)
+            else
+                print("[MACRO_PROBE] AVISO: No se encontró código IR 'power' para " .. target .. " en ir_db.")
+            end
+
+            -- 4. Dynamic polling loop: Probe TCP port every 500ms until ready or 10s max timeout
+            if ip and ip ~= "" and port and port > 0 then
+                print("[MACRO_PROBE] Sondeando " .. ip .. ":" .. tostring(port) .. " (Max timeout: 10000ms)...")
+                local is_ready, elapsed = probe_reachability(ip, port, 10000, 500, 300)
+                if is_ready then
+                    print("[MACRO_PROBE] Dispositivo listo en " .. elapsed .. "ms!")
+                else
+                    print("[MACRO_PROBE] Timeout de alcanzabilidad tras " .. elapsed .. "ms.")
+                end
+            else
+                c_sys_delay(3000)
+            end
+        end
+
+        print("[LUA_BRIDGE] Calling c_send_intent with parameters_json: " .. parameters_json)
+        c_send_intent(rule.call_id, action, target, room, entity_id, parameters_json)
         return
 
     -- -------------------------------------------------------------------------

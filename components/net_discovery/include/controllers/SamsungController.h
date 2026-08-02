@@ -17,6 +17,10 @@ public:
         return "SamsungController";
     }
 
+    PowerStateReachabilityTrust ReachabilityTrust() const override {
+        return PowerStateReachabilityTrust::Confirmed;
+    }
+
     std::vector<std::string> SupportedManufacturers() const override {
         return {"Samsung", "Samsung Electronics"};
     }

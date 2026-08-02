@@ -36,6 +36,8 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "cJSON.h"
+#include <algorithm>
+#include <cctype>
 #include <string.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -749,6 +751,22 @@ extern "C" bool netdiscovery_trigger_initial_scan(void) {
         IdentityResolutionEngine idEngine;
         std::vector<LogicalDevice> logicalDevices = idEngine.Resolve(registry.GetAll());
 
+        // Prune remaining unmerged skeletal/ghost candidates from logicalDevices
+        auto isGhostDevice = [](const LogicalDevice& dev) {
+            auto isBlank = [](const std::string& str) {
+                return str.empty() || std::all_of(str.begin(), str.end(), [](unsigned char c) { return std::isspace(c); });
+            };
+            bool emptyName = isBlank(dev.displayName) || dev.displayName == dev.id;
+            bool emptyMfr = isBlank(dev.manufacturer);
+            bool emptyModel = isBlank(dev.model);
+            return emptyName && emptyMfr && emptyModel;
+        };
+
+        logicalDevices.erase(
+            std::remove_if(logicalDevices.begin(), logicalDevices.end(), isGhostDevice),
+            logicalDevices.end()
+        );
+
         ControllerResolver controllerResolver(*g_controllerRegistry);
 
         size_t prev_internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
@@ -775,28 +793,33 @@ extern "C" bool netdiscovery_trigger_initial_scan(void) {
             prev_largest_block = curr_largest_block;
         }
 
+        g_knowledgeStore->Consolidate();
+        auto loadedEntities = g_knowledgeStore->GetLoadedEntities();
+
         ESP_LOGI(TAG, "========== DISCOVERY COMPLETION DUMP ==========");
-        ESP_LOGI(TAG, "One-shot scan completed. Discovered %d devices.", (int)logicalDevices.size());
+        ESP_LOGI(TAG, "One-shot scan completed. Discovered %d devices.", (int)loadedEntities.size());
         int dIdx = 0;
-        for (const auto& dev : logicalDevices) {
+        for (const auto& entity : loadedEntities) {
             ESP_LOGI(TAG, "Discovered Device #%d:", dIdx++);
-            ESP_LOGI(TAG, "  Name         : %s", dev.displayName.c_str());
-            ESP_LOGI(TAG, "  Manufacturer : %s", dev.manufacturer.c_str());
-            ESP_LOGI(TAG, "  Model        : %s", dev.model.c_str());
-            ESP_LOGI(TAG, "  PrimaryClass : %s", NetDiscovery::ToString(dev.primaryClass).c_str());
-            ESP_LOGI(TAG, "  IP Address   : %s", !dev.endpoints.empty() ? dev.endpoints[0].ip.c_str() : "None");
+            ESP_LOGI(TAG, "  Name         : %s", entity.displayName.c_str());
+            ESP_LOGI(TAG, "  Manufacturer : %s", entity.identity.vendor.c_str());
+            ESP_LOGI(TAG, "  Model        : %s", entity.identity.model.c_str());
+            ESP_LOGI(TAG, "  PrimaryClass : %s", NetDiscovery::ToString(entity.primaryClass).c_str());
+            ESP_LOGI(TAG, "  IP Address   : %s", !entity.endpoints.empty() ? entity.endpoints[0].ip.c_str() : "None");
             ESP_LOGI(TAG, "  Capabilities :");
-            for (const auto& cap : dev.capabilities) {
+            for (const auto& cap : entity.capabilities.GetCapabilities()) {
                 ESP_LOGI(TAG, "    - %s", NetDiscovery::ToString(cap).c_str());
             }
             ESP_LOGI(TAG, "  Controllers  :");
-            for (const auto& ctrl : dev.controllerCandidates) {
+            for (const auto& ctrl : entity.compatibleControllers) {
                 ESP_LOGI(TAG, "    - %s (Score: %d)", ctrl.name.c_str(), ctrl.confidence);
             }
             ESP_LOGI(TAG, "-----------------------------------------------");
         }
-        ESP_LOGI(TAG, "===============================================");
-        
+        // Purge raw SSDP/mDNS evidence vector from RAM before audio ignition
+        registry.Clear();
+        ESP_LOGI(TAG, "🧹 [DeviceRegistry] Purged raw evidence vector prior to audio ignition");
+
         // Free SSDP socket resources since discovery is a one-time operation
         g_ssdpClient->Shutdown();
         g_ssdpClient.reset();
@@ -813,3 +836,166 @@ extern "C" bool netdiscovery_trigger_initial_scan(void) {
     }
     return true;
 }
+
+static uint16_t parse_port_from_url(const std::string& url) {
+    size_t pos = url.find("://");
+    size_t start = (pos != std::string::npos) ? pos + 3 : 0;
+    size_t colon = url.find(':', start);
+    if (colon != std::string::npos) {
+        size_t slash = url.find('/', colon);
+        std::string port_str = (slash != std::string::npos) 
+            ? url.substr(colon + 1, slash - colon - 1) 
+            : url.substr(colon + 1);
+        int p = std::atoi(port_str.c_str());
+        if (p > 0 && p <= 65535) return (uint16_t)p;
+    }
+    return 0;
+}
+
+bool netdiscovery_get_entity_endpoint(const char* target_name, char* out_ip, size_t ip_len, uint32_t* out_port, bool* out_trusted) {
+    if (!g_knowledgeStore || !target_name || !out_ip || !out_port) return false;
+    out_ip[0] = '\0';
+    *out_port = 8080;
+    if (out_trusted) *out_trusted = false;
+
+    auto entities = g_knowledgeStore->GetLoadedEntities();
+    if (entities.empty()) {
+        ESP_LOGW(TAG, "[netdiscovery_get_entity_endpoint] No entities loaded in KnowledgeStore");
+        return false;
+    }
+
+    std::string targetLower = target_name;
+    for (char &c : targetLower) c = (char)std::tolower((unsigned char)c);
+
+    const NetDiscovery::KnowledgeEntity* matchedEntity = nullptr;
+
+    // Pass 1: Exact match (case-insensitive) against persistentId, displayName, or aliases
+    for (const auto& entity : entities) {
+        std::string nameLower = entity.displayName;
+        for (char &c : nameLower) c = (char)std::tolower((unsigned char)c);
+        std::string idLower = entity.persistentId;
+        for (char &c : idLower) c = (char)std::tolower((unsigned char)c);
+
+        if (nameLower == targetLower || idLower == targetLower) {
+            matchedEntity = &entity;
+            break;
+        }
+        for (const auto& alias : entity.aliases.userAliases) {
+            std::string aLower = alias;
+            for (char &c : aLower) c = (char)std::tolower((unsigned char)c);
+            if (aLower == targetLower) { matchedEntity = &entity; break; }
+        }
+        if (matchedEntity) break;
+    }
+
+    // Pass 2: Substring / Fuzzy match (case-insensitive)
+    if (!matchedEntity) {
+        for (const auto& entity : entities) {
+            std::string nameLower = entity.displayName;
+            for (char &c : nameLower) c = (char)std::tolower((unsigned char)c);
+            std::string idLower = entity.persistentId;
+            for (char &c : idLower) c = (char)std::tolower((unsigned char)c);
+
+            if ((!nameLower.empty() && (nameLower.find(targetLower) != std::string::npos || targetLower.find(nameLower) != std::string::npos)) ||
+                (!idLower.empty() && (idLower.find(targetLower) != std::string::npos || targetLower.find(idLower) != std::string::npos))) {
+                matchedEntity = &entity;
+                break;
+            }
+        }
+    }
+
+    // Pass 3: Fallback to first SmartTV
+    if (!matchedEntity) {
+        for (const auto& entity : entities) {
+            if (entity.primaryClass == NetDiscovery::PrimaryDeviceClass::SmartTV) {
+                matchedEntity = &entity;
+                ESP_LOGI(TAG, "[netdiscovery_get_entity_endpoint] Target '%s' not matched by name; fallback to SmartTV '%s'",
+                         target_name, entity.displayName.c_str());
+                break;
+            }
+        }
+    }
+
+    if (!matchedEntity) {
+        ESP_LOGW(TAG, "[netdiscovery_get_entity_endpoint] No matching entity or SmartTV fallback found for '%s'", target_name);
+        return false;
+    }
+
+    // Extract IP address
+    std::string ipStr;
+    if (!matchedEntity->endpoints.empty() && !matchedEntity->endpoints[0].ip.empty()) {
+        ipStr = matchedEntity->endpoints[0].ip;
+    } else if (!matchedEntity->runtimeState.endpoints.empty() && !matchedEntity->runtimeState.endpoints[0].ip.empty()) {
+        ipStr = matchedEntity->runtimeState.endpoints[0].ip;
+    }
+
+    if (ipStr.empty()) {
+        ESP_LOGW(TAG, "[netdiscovery_get_entity_endpoint] Entity '%s' has no IP endpoint", matchedEntity->displayName.c_str());
+        return false;
+    }
+
+    snprintf(out_ip, ip_len, "%s", ipStr.c_str());
+
+    // Extract Port dynamically
+    uint16_t resolvedPort = 0;
+
+    for (const auto& s : matchedEntity->services) {
+        if (!s.controlUrl.empty()) resolvedPort = parse_port_from_url(s.controlUrl);
+        if (resolvedPort != 0) break;
+        if (!s.eventUrl.empty()) resolvedPort = parse_port_from_url(s.eventUrl);
+        if (resolvedPort != 0) break;
+    }
+    if (resolvedPort == 0) {
+        for (const auto& ns : matchedEntity->normalizedServices) {
+            if (!ns.endpointUrl.empty()) resolvedPort = parse_port_from_url(ns.endpointUrl);
+            if (resolvedPort != 0) break;
+        }
+    }
+
+    // Brand-specific port heuristics if no explicit port found in service URLs
+    if (resolvedPort == 0) {
+        std::string vendor = matchedEntity->identity.vendor;
+        std::string disp = matchedEntity->displayName;
+        for (char &c : vendor) c = (char)std::tolower((unsigned char)c);
+        for (char &c : disp) c = (char)std::tolower((unsigned char)c);
+
+        if (vendor.find("roku") != std::string::npos || disp.find("roku") != std::string::npos) {
+            resolvedPort = 8060;
+        } else if (vendor.find("lg") != std::string::npos || disp.find("webos") != std::string::npos) {
+            resolvedPort = 3000;
+        } else if (vendor.find("samsung") != std::string::npos || disp.find("samsung") != std::string::npos) {
+            resolvedPort = 8080;
+        } else {
+            resolvedPort = 8080; // General DIAL default
+        }
+    }
+
+    *out_port = resolvedPort;
+
+    if (out_trusted) {
+        *out_trusted = false;
+        if (g_controllerRegistry && matchedEntity) {
+            for (const auto& ctrl : g_controllerRegistry->GetControllers()) {
+                if (ctrl && ctrl->ReachabilityTrust() == NetDiscovery::PowerStateReachabilityTrust::Confirmed) {
+                    std::string vendorLower = matchedEntity->identity.vendor;
+                    for (char &c : vendorLower) c = (char)std::tolower((unsigned char)c);
+                    for (const auto& mfg : ctrl->SupportedManufacturers()) {
+                        std::string mfgLower = mfg;
+                        for (char &c : mfgLower) c = (char)std::tolower((unsigned char)c);
+                        if (!mfgLower.empty() && !vendorLower.empty() &&
+                            (vendorLower.find(mfgLower) != std::string::npos || mfgLower.find(vendorLower) != std::string::npos)) {
+                            *out_trusted = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ESP_LOGI(TAG, "[netdiscovery_get_entity_endpoint] Resolved target '%s' -> Entity '%s' (%s:%u) trust=%s",
+             target_name, matchedEntity->displayName.c_str(), out_ip, (unsigned)*out_port,
+             (out_trusted && *out_trusted) ? "CONFIRMED" : "UNCONFIRMED");
+    return true;
+}
+

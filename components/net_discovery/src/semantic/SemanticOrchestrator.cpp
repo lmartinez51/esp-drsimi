@@ -270,7 +270,12 @@ SemanticError SemanticOrchestrator::DirectExecutionPath(
 
     // Prepare ExecutionRequest parameters
     std::string appName = "YouTube";
-    auto paramIt = request.rawParameters.find("name");
+    auto paramIt = request.rawParameters.find("app_id");
+    if (paramIt == request.rawParameters.end()) paramIt = request.rawParameters.find("name");
+    if (paramIt == request.rawParameters.end()) paramIt = request.rawParameters.find("app_name");
+    if (paramIt == request.rawParameters.end()) paramIt = request.rawParameters.find("appName");
+    if (paramIt == request.rawParameters.end()) paramIt = request.rawParameters.find("app");
+
     if (paramIt != request.rawParameters.end()) {
         appName = paramIt->second;
     }
@@ -278,7 +283,7 @@ SemanticError SemanticOrchestrator::DirectExecutionPath(
     NetDiscovery::ExecutionRequest execReq{
         targetDev,
         actionDesc,
-        {{"name", appName}},
+        {{"name", appName}, {"app_id", appName}},
         NetDiscovery::ExecutionContext{}
     };
 
